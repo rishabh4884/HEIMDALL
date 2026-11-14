@@ -97,6 +97,7 @@ class InvestigationRequest:
     local_root: str | None = None  # directory for the local-fits source (recorded for reproduction)
     context: str = "auto"  # auto: query Gaia DR3 and JPL SB Ident for real data | none
     calibration_products: str = "epsf"  # epsf | full (adds the CWAVE/CBAND spectral WCS and the solid-angle map)
+    obs_ids: list[str] | None = None  # analyse exactly these observations (used by target investigations); None = all discovered
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -211,12 +212,16 @@ class InvestigationPipeline:
         ordered = sorted(disc.observations, key=lambda o: (obs_time(o), o.obs_id))
         selected = ordered
         not_selected = []
-        if req.max_observations and len(ordered) > req.max_observations:
+        if req.obs_ids:
+            wanted = set(req.obs_ids)
+            selected = [o for o in ordered if o.obs_id in wanted]
+            not_selected = [o.obs_id for o in ordered if o.obs_id not in wanted]
+        elif req.max_observations and len(ordered) > req.max_observations:
             idx = sorted({int(i) for i in np.round(np.linspace(0, len(ordered) - 1, req.max_observations))})
             selected = [ordered[i] for i in idx]
             not_selected = [o.obs_id for i, o in enumerate(ordered) if i not in set(idx)]
         self._end(rec, ComputationStatus.COMPLETED, n_selected=len(selected), n_not_selected=len(not_selected),
-                  rule="time-ordered, evenly spaced" if not_selected else "all")
+                  rule=("explicit observation list" if req.obs_ids else "time-ordered, evenly spaced") if not_selected else "all")
 
         # retrieval ---------------------------------------------------------------
         rec = self._start("retrieval")

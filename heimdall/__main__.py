@@ -21,7 +21,7 @@ from .config import load_settings
 from .contracts.outcomes import ErrorCode, HeimdallError
 from .data_access.registry import default_registry
 
-USAGE = "usage: python3 -m heimdall {version|check|sources|access|coverage|investigate|runs|inspect|reinvestigate|validate|reproduce|skymap|playback|export|config|cache|demo}"
+USAGE = "usage: python3 -m heimdall {version|check|sources|access|coverage|investigate|target|runs|inspect|reinvestigate|validate|reproduce|skymap|playback|export|config|cache|demo}"
 
 
 def _env_file() -> Path | None:
@@ -130,6 +130,25 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--out", type=Path, help="run directory (default: <state_dir>/runs/<run_id>)")
     s.add_argument("--no-svg", action="store_true")
     s.add_argument("--quiet", action="store_true")
+    s = sub.add_parser("target", help="named (NASA-01..05) or coordinate-addressable target investigations")
+    s.add_argument("action", choices=["list", "resolve", "run", "show", "matrix"])
+    s.add_argument("target", nargs="?", help="NASA-01..NASA-05 or a name fragment")
+    s.add_argument("--ra", type=float)
+    s.add_argument("--dec", type=float)
+    s.add_argument("--category", default="MOVING_OBJECT", choices=["MOVING_OBJECT", "VARIABLE_STAR"], help="for --ra/--dec targets")
+    s.add_argument("--source", default="irsa-spherex")
+    s.add_argument("--local-root")
+    s.add_argument("--max-observations", type=int, default=16)
+    s.add_argument("--detectors", help="comma-separated detector numbers 1-6 (default: per-target)")
+    s.add_argument("--mjd-start", type=float)
+    s.add_argument("--mjd-end", type=float)
+    s.add_argument("--cutout-size", type=float)
+    s.add_argument("--max-seconds", type=float, default=1800.0, help="stop starting new retrievals after this many seconds (result is PARTIAL)")
+    s.add_argument("--no-blind", action="store_true", help="skip the blind HEIMDALL pipeline run on the same exposures")
+    s.add_argument("--no-context", action="store_true")
+    s.add_argument("--write", type=Path, help="matrix: write markdown here")
+    s.add_argument("--json", action="store_true")
+    s.add_argument("--quiet", action="store_true")
     s = sub.add_parser("runs", help="list stored investigations")
     s.add_argument("--json", action="store_true")
     s = sub.add_parser("inspect", help="inspect a stored investigation")
@@ -212,6 +231,8 @@ def _run(args) -> int:
         _print_summary(summarize(result))
         print(f"  saved to {run_dir}")
         return 0 if result["status"]["execution"] != "FAILED" else 1
+    elif args.command == "target":
+        return _target(engine, args)
     elif args.command == "runs":
         _print(engine.runs(), args.json)
     elif args.command == "inspect":
@@ -283,6 +304,45 @@ def _run(args) -> int:
         _print_summary(summarize(result))
         print(f"  saved to {run_dir} (skymap.svg, skymap.json, investigation.json, events.jsonl)")
     return 0
+
+
+def _target(engine, args) -> int:
+    if args.action == "list":
+        for t in engine.targets():
+            saved = t["saved"]
+            print(f"{t['target_id']}  {t['name']:45s} {t['category']:14s} " + (f"saved: {saved['status']['execution']}/{saved['status']['test_status']}" if saved else "not yet run"))
+        return 0
+    if args.action == "matrix":
+        from .targets.matrix import build_matrix
+        text = build_matrix(engine)
+        if args.write:
+            args.write.write_text(text, encoding="utf-8")
+            print(f"written to {args.write}")
+        else:
+            print(text)
+        return 0
+    if args.action == "show":
+        _print(engine.target_result(args.target), True)
+        return 0
+    if args.action == "resolve":
+        _print(engine.resolve_target(args.target, ra=args.ra, dec=args.dec, category=args.category), True)
+        return 0
+    progress = None if args.quiet else (lambda msg: print(f"[target] {msg}", file=sys.stderr))
+    res = engine.investigate_target(args.target, ra=args.ra, dec=args.dec, category=args.category, source_id=args.source, local_root=args.local_root,
+                                    progress=progress, max_observations=args.max_observations, detectors=tuple(_ints(args.detectors)) if args.detectors else None,
+                                    mjd_start=args.mjd_start, mjd_end=args.mjd_end, cutout_size_deg=args.cutout_size, max_seconds=args.max_seconds,
+                                    blind_pipeline=not args.no_blind, context=not args.no_context)
+    if args.json:
+        _print(res, True)
+    else:
+        c = res.get("coverage", {})
+        print(f"{res['investigation_id']}  {res['target']['name']}  execution={res['status']['execution']}  test={res['status']['test_status']}")
+        print(f"  coverage: {c.get('n_discovered')} observations found, {c.get('n_selected')} selected, {c.get('n_measured')} measured; releases {c.get('per_release')}")
+        print(f"  {res['conclusion']['quick_answer']}")
+        for h in res.get("hypotheses", []):
+            print(f"  [{h['status']:15s}] {h['title']}")
+        print(f"  saved to {res.get('saved_to')}")
+    return 0 if res["status"]["execution"] != "BLOCKED" else 1
 
 
 def main(argv: list[str] | None = None) -> int:

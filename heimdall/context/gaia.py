@@ -21,6 +21,9 @@ from ..engine.skygeom import angular_separation_deg, offsets_arcsec
 from . import CachedService, form
 
 TAP_SYNC = "https://irsa.ipac.caltech.edu/TAP/sync"
+ESA_TAP_SYNC = "https://gea.esac.esa.int/tap-server/tap/sync"
+# (label, endpoint, table). The ESA archive is the Gaia mission's own service and serves as the fallback when IRSA does not answer.
+GAIA_ENDPOINTS = (("gaia_dr3_source@IRSA", TAP_SYNC, "gaia_dr3_source"), ("gaiadr3.gaia_source@ESA", ESA_TAP_SYNC, "gaiadr3.gaia_source"))
 COLUMNS = ("source_id", "ra", "dec", "ra_error", "dec_error", "pmra", "pmdec", "pmra_error", "pmdec_error", "parallax",
            "parallax_error", "phot_g_mean_mag", "ref_epoch")
 
@@ -97,11 +100,13 @@ def parse_stars(text: str) -> list[Star]:
 
 
 class GaiaCatalogue:
-    def __init__(self, service: CachedService) -> None:
+    def __init__(self, service: CachedService, endpoint: tuple[str, str, str] | None = None) -> None:
         self.service = service
+        self.endpoint = endpoint or GAIA_ENDPOINTS[0]
 
     def cone(self, ra: float, dec: float, radius_deg: float, g_max: float) -> CatalogueQuery:
-        adql = (f"SELECT {', '.join(COLUMNS)} FROM gaia_dr3_source WHERE 1 = CONTAINS(POINT('ICRS', ra, dec), "
+        label, url, table = self.endpoint
+        adql = (f"SELECT {', '.join(COLUMNS)} FROM {table} WHERE 1 = CONTAINS(POINT('ICRS', ra, dec), "
                 f"CIRCLE('ICRS', {ra:.8f}, {dec:.8f}, {radius_deg:.6f})) AND phot_g_mean_mag < {g_max:.2f}")
         body = form({"REQUEST": "doQuery", "LANG": "ADQL", "FORMAT": "csv", "QUERY": adql})
 
@@ -115,11 +120,11 @@ class GaiaCatalogue:
                 return str(exc)
             return None
 
-        ans = self.service.fetch(TAP_SYNC, body, validate=validate)
+        ans = self.service.fetch(url, body, validate=validate)
         if ans.status != "COMPLETED":
-            return CatalogueQuery("gaia_dr3_source@IRSA", ans.status, ans.reason, False, 0, g_max, [ra, dec, radius_deg])
+            return CatalogueQuery(label, ans.status, ans.reason, False, 0, g_max, [ra, dec, radius_deg])
         stars = parse_stars(ans.body.decode("utf-8", errors="replace"))
-        return CatalogueQuery("gaia_dr3_source@IRSA", "COMPLETED", "", ans.from_cache, len(stars), g_max,
+        return CatalogueQuery(label, "COMPLETED", "", ans.from_cache, len(stars), g_max,
                               [ra, dec, radius_deg], stars)
 
 

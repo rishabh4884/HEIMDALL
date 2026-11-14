@@ -44,6 +44,14 @@ What has and has not been checked against real data is recorded in
 `docs/VERIFICATION_REAL_DATA.md` and `docs/COMPLETENESS_MATRIX.md`. Passing
 software tests are not scientific validation.
 
+## Named and coordinate-addressable targets (2026-11-14)
+
+`python3 -m heimdall target {list|resolve|run|show|matrix}` investigates the five NASA test targets (NASA-01 Barnard's Star, NASA-02 Epsilon Indi B,
+NASA-03 WISE 0855, NASA-04 RW Aurigae, NASA-05 R Dra) or any coordinate through one engine: catalogue resolution (Gaia DR3 with ESA fallback, CatWISE2020), epoch-adjusted
+expected positions, bounded epoch-balanced retrieval, forced photometry and registered centroids against Gaia controls, motion and variability tests with control-star
+null references, a blind pipeline run on the same exposures, and competing hypotheses with evidence. Method, limits and reproduction: `docs/NASA_TARGETS.md`;
+measured outcomes: `docs/NASA_TARGET_MATRIX.md`; requirements: `docs/REQUIREMENTS_LEDGER.md`; acceptance scenarios: `docs/NASA_ACCEPTANCE.md`.
+
 ## Requirements
 
 - Python 3.11 or later
@@ -91,6 +99,7 @@ python3 -m unittest discover -s tests -t .
 | `docs/ARCHITECTURE.md` | modules, dependency rules, pipeline, design decisions |
 | `docs/SCIENCE_METHODS.md` | every method explained, with formulas, assumptions and failure conditions |
 | `docs/USAGE.md` | setup, CLI reference, configuration, walkthrough |
+| `docs/NASA_TARGETS.md`, `docs/NASA_TARGET_MATRIX.md`, `docs/NASA_ACCEPTANCE.md`, `docs/REQUIREMENTS_LEDGER.md` | target investigations: method, results, acceptance scenarios, traceability |
 | `docs/OUTPUT_SCHEMA.md` | investigation, sky-map, playback and validation record schemas (the UI contract) |
 
 ## Secrets

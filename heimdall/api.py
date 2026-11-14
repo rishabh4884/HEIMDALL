@@ -121,6 +121,59 @@ class Engine:
                 (run_dir / "skymap.svg").write_text(render_svg(skymap), encoding="utf-8")
         return result, run_dir
 
+    # -- named and coordinate-addressable targets ---------------------------------------
+
+    def targets(self) -> list[dict]:
+        """The registered NASA test targets and any saved target investigation for each."""
+        from .targets.registry import NASA_TARGETS
+        out = []
+        for tid, spec in NASA_TARGETS.items():
+            saved = self.target_result(tid, missing_ok=True)
+            out.append({"target_id": tid, "name": spec.name, "category": spec.category, "description": spec.description,
+                        "saved": None if saved is None else {"investigation_id": saved["investigation_id"], "status": saved["status"],
+                                                             "created_at": saved["created_at"]}})
+        return out
+
+    def target_result(self, target_id: str, missing_ok: bool = False) -> dict | None:
+        path = Path(self.settings.state_dir) / "targets" / target_id / "latest.json"
+        if not path.is_file():
+            if missing_ok:
+                return None
+            raise HeimdallError.of(ErrorCode.INPUT_INVALID, f"no saved investigation for target {target_id}")
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def resolve_target(self, ref: str | None = None, *, ra: float | None = None, dec: float | None = None, category: str = "MOVING_OBJECT") -> dict:
+        """Reference astrometry of a registered target or coordinate: no SPHEREx data is retrieved."""
+        from .context import CachedService
+        from .targets import astrometry
+        from .targets.registry import TargetSpec, get_target
+        spec = self._target_spec(ref, ra, dec, category)
+        _ = (TargetSpec, get_target)
+        gaia = CachedService("gaia", self.settings)
+        cat = CachedService("catwise", self.settings)
+        return astrometry.resolve(spec, cat if spec.catalogue == "catwise2020" else gaia, gaia_service=gaia).to_dict()
+
+    @staticmethod
+    def _target_spec(ref: str | None, ra: float | None, dec: float | None, category: str):
+        from .targets.registry import TargetSpec, get_target
+        if ref:
+            try:
+                return get_target(ref)
+            except KeyError as exc:
+                raise HeimdallError.of(ErrorCode.INPUT_INVALID, str(exc)) from None
+        if ra is None or dec is None:
+            raise HeimdallError.of(ErrorCode.INPUT_INVALID, "give a target id/name or --ra and --dec")
+        return TargetSpec.from_coordinates(ra, dec, category=category)
+
+    def investigate_target(self, ref: str | None = None, *, ra: float | None = None, dec: float | None = None, category: str = "MOVING_OBJECT",
+                           source_id: str = "irsa-spherex", local_root: str | None = None, progress=None, cancel=None, **options) -> dict:
+        """Run the target investigation (see heimdall.targets.investigate). ``options`` are TargetOptions fields."""
+        from .targets.investigate import TargetOptions, investigate_target
+        spec = self._target_spec(ref, ra, dec, category)
+        opts = TargetOptions(**{k: v for k, v in options.items() if v is not None})
+        return investigate_target(spec, source=self.source(source_id, local_root), settings=self.settings, config=self.config, registry=self.validation,
+                                  store=self.store, options=opts, progress=progress, cancel=cancel)
+
     def runs(self) -> list[dict]:
         return self.store.list()
 
