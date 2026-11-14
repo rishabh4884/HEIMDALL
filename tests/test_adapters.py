@@ -26,6 +26,9 @@ HEADER = ("collection,observationid,energy_bandpassname,energy_bounds_lower,ener
           "time_bounds_upper,provenance_version,uri,contentchecksum,contentlength\n")
 ROW = ("spherex_qr2,TESTONLY_0001_1,SPHEREx-D2,1.1e-06,1.6e-06,61000.0,61000.001,6.4,"
        "ibe/data/spherex/qr2/level2/TEST/level2_TESTONLY_0001_1D2_spx.fits,md5:00ff,1000\n")
+SIA_HEADER = "obs_collection,obs_id,access_url,t_min,t_max,em_min,em_max\n"
+SIA_ROW = ("spherex_dr1,arbitrary-obscore-id,https://irsa.ipac.caltech.edu/ibe/data/spherex/dr1/level2/2025W33_2C/"
+           "l2b-v27-2026-228/2/level2_2025W33_2C_0321_1D2_spx_l2b-v27-2026-228.fits,60902.0,60902.1,1.1e-06,1.6e-06\n")
 FITS_BYTES = io.BytesIO()
 fits.PrimaryHDU().writeto(FITS_BYTES)
 FITS_BYTES = FITS_BYTES.getvalue()
@@ -79,6 +82,21 @@ class IrsaTests(unittest.TestCase):
         result = self.source(ok(HEADER)).discover(QUERY)
         self.assertEqual(result.outcome, ResultOutcome.NO_OBSERVATIONS)
 
+    def test_transient_tap_failure_falls_back_to_documented_sia2(self):
+        """SIA2 uses ObsCore CSV fields; no TAP-table schema is assumed."""
+        down = HttpResponse(502, b"proxy error")
+        query = DiscoveryQuery(region=QUERY.region, release="spherex_dr1", filters={"detectors": "2"})
+        result = self.source(down, down, down, ok(SIA_HEADER + SIA_ROW)).discover(query)
+        self.assertEqual(result.outcome, ResultOutcome.OK)
+        self.assertEqual(len(result.observations), 1)
+        obs = result.observations[0]
+        self.assertEqual(obs.obs_id, "2025W33_2C_0321_1D2")
+        self.assertEqual(obs.provenance.products[0].access_reference,
+                         "ibe/data/spherex/dr1/level2/2025W33_2C/l2b-v27-2026-228/2/level2_2025W33_2C_0321_1D2_spx_l2b-v27-2026-228.fits")
+        self.assertIsNone(obs.provenance.products[0].checksum)
+        self.assertIn("SIA2", result.provenance.notes or "")
+        self.assertTrue(self.transport.calls[-1][1].startswith("https://irsa.ipac.caltech.edu/SIA?"))
+
     def test_malformed_responses(self):
         for body in ("<VOTABLE><INFO name='QUERY_STATUS' value='ERROR'/></VOTABLE>", "a,b\n1,2\n"):
             with self.subTest(body=body[:10]):
@@ -104,8 +122,10 @@ class IrsaTests(unittest.TestCase):
     def test_retries_are_bounded_and_only_for_transient_failures(self):
         with self.assertRaises(HeimdallError):
             self.source(TransportTimeout("t")).discover(QUERY)
-        self.assertEqual(len(self.transport.calls), 3)
-        self.assertEqual(self.sleeps, [1.0, 2.0])
+        # After bounded TAP retries, a timeout makes one bounded SIA2 attempt.
+        # The fake transport times out there too; it must still stop promptly.
+        self.assertEqual(len(self.transport.calls), 6)
+        self.assertEqual(self.sleeps, [1.0, 2.0, 1.0, 2.0])
         with self.assertRaises(HeimdallError):
             self.source(HttpResponse(403, b"")).discover(QUERY)
         self.assertEqual(len(self.transport.calls), 1)

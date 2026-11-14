@@ -20,8 +20,10 @@ def build_matrix(engine) -> str:
             lines += ["Not yet run.", ""]
             continue
         ref, cov, st = r["reference"], r.get("coverage", {}), r["status"]
-        lines += [f"- Investigation: `{r['investigation_id']}`; execution **{st['execution']}**, test **{st['test_status']}** ({st.get('reason')})",
-                  f"- Identification: {ref.get('source_id')} ({ref.get('catalogue')}), status {ref['status']} {ref.get('reason') or ''}",
+        reason = st.get("reason") or "no reason recorded"
+        reference_reason = f"; {ref['reason']}" if ref.get("reason") else ""
+        lines += [f"- Investigation: `{r['investigation_id']}`; execution **{st['execution']}**, test **{st['test_status']}** ({reason})",
+                  f"- Identification: {ref.get('source_id')} ({ref.get('catalogue')}), status {ref['status']}{reference_reason}",
                   f"- Position at reference epoch {_fmt(ref.get('epoch_jyear'), 1)}: RA {_fmt(ref.get('ra_deg'), 6)} Dec {_fmt(ref.get('dec_deg'), 6)}; "
                   f"PM ({_fmt(ref.get('pmra_mas_yr'), 1)}, {_fmt(ref.get('pmdec_mas_yr'), 1)}) mas/yr [{ref.get('pm_source')}]",
                   f"- SPHEREx observations found {cov.get('n_discovered')}, selected {cov.get('n_selected')}, measured {cov.get('n_measured')}; "
@@ -42,6 +44,7 @@ def build_matrix(engine) -> str:
         lines.append(f"- Blind pipeline: {b.get('status')} run `{b.get('run_id')}`; detections near expected target {b.get('blind_detection_near_expected_target', {}).get('n_with_blind_detection')}"
                      f"/{b.get('blind_detection_near_expected_target', {}).get('n_images_covered')}")
         lines.append(f"- Detectability: {r.get('detectability', {}).get('forced_snr')}")
-        lines.append("- Hypotheses: " + "; ".join(f"{h['title']} [{h['status']}]" for h in r.get("hypotheses", [])))
+        hypotheses = "; ".join(f"{h['title']} [{h['status']}]" for h in r.get("hypotheses", [])) or "not run"
+        lines.append("- Hypotheses: " + hypotheses)
         lines += [f"- Conclusion: {r['conclusion']['quick_answer']}", f"- Reproduce: `{r.get('reproduce')}`", ""]
     return "\n".join(lines)

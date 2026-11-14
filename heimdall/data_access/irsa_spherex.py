@@ -9,6 +9,10 @@ The adapter uses the public live service without credentials:
   (``collection``, ``observationid``).
 - Level 2 images at ``https://irsa.ipac.caltech.edu/<uri>``; the cutout service
   takes ``?center=<ra>,<dec>d&size=<deg>`` and returns the same MEF layout.
+- The documented SIA2 endpoint ``https://irsa.ipac.caltech.edu/SIA`` is used
+  as a discovery fallback for current DR1/QR3 collections when TAP has a
+  transient network failure.  Its standard CSV fields are validated before
+  becoming observations; a failed fallback never becomes an empty search.
 - QR3 ePSF calibration product (documented in IRSA's PSF tutorial) on the
   public S3 bucket.
 
@@ -40,6 +44,7 @@ from .interface import (AccessReport, DataSource, DiscoveryQuery, DiscoveryResul
 SOURCE_ID = "irsa-spherex"
 IRSA_BASE = "https://irsa.ipac.caltech.edu/"
 TAP_SYNC = IRSA_BASE + "TAP/sync"
+SIA = IRSA_BASE + "SIA"
 S3 = "https://nasa-irsa-spherex.s3.us-east-1.amazonaws.com/"
 # Calibration products hosted on the public bucket. The ePSF is IRSA's
 # recommended PSF for all releases; the spectral WCS and solid-angle map are the QR2 versions.
@@ -61,6 +66,10 @@ REQUIRED_COLUMNS = ("collection", "observationid", "energy_bandpassname", "energ
                     "time_bounds_lower", "time_bounds_upper", "provenance_version", "uri", "contentchecksum")
 _NAME = re.compile(r"^[a-z0-9_]+$")
 _OBS = re.compile(r"^(?P<obs>[A-Za-z0-9_]+)D(?P<det>[1-6])$")
+_SIA_PRODUCT = re.compile(r"(?:^|/)level2_(?P<obs>[A-Za-z0-9_]+)D(?P<det>[1-6])_spx[^/]*\.fits(?:$|[?#])", re.I)
+# Current public image collections documented by IRSA.  QR2 remains directly
+# downloadable, but is no longer searchable, so it is intentionally excluded.
+SIA_COLLECTIONS = ("spherex_dr1", "spherex_dr1_deep", "spherex_qr3", "spherex_qr3_deep")
 
 
 def _floats(text: str, name: str) -> float:
@@ -86,7 +95,7 @@ class IrsaSpherexSource(DataSource):
         return SourceDescription(
             source_id=SOURCE_ID, display_name="NASA/IPAC IRSA: SPHEREx Level 2 spectral images (public archive)",
             requires_credentials=False, capabilities_verified=False,
-            notes="TAP discovery, cutout retrieval and QR3 ePSF access are supported; capability verification remains "
+            notes="TAP discovery with SIA2 fallback, cutout retrieval and QR3 ePSF access are supported; capability verification remains "
                   "conservative until automated live conformance completes.")
 
     # -- TAP -------------------------------------------------------------------
@@ -120,11 +129,111 @@ class IrsaSpherexSource(DataSource):
         return rows
 
     def check_access(self) -> AccessReport:
-        rows = self._tap("SELECT table_name FROM TAP_SCHEMA.tables WHERE table_name = 'spherex.plane'")
-        if not rows:
-            raise HeimdallError.of(ErrorCode.ACCESS_DENIED, "spherex.plane is not visible through IRSA TAP")
-        return AccessReport(source_id=SOURCE_ID, checked_at=datetime.now(UTC),
-                            detail="IRSA TAP reachable; spherex.plane visible; no credentials required")
+        try:
+            rows = self._tap("SELECT table_name FROM TAP_SCHEMA.tables WHERE table_name = 'spherex.plane'")
+            if not rows:
+                raise HeimdallError.of(ErrorCode.ACCESS_DENIED, "spherex.plane is not visible through IRSA TAP")
+            detail = "IRSA TAP reachable; spherex.plane visible; no credentials required"
+        except HeimdallError as exc:
+            # SIA2 is useful when TAP's backend fails (5xx) or TAP alone times
+            # out; those routes are independently served in practice.  A host
+            # that is unreachable cannot benefit from another route on it.
+            status = exc.info.detail.get("http_status")
+            if self._settings.offline or not (exc.code is ErrorCode.ARCHIVE_TIMEOUT or status in {"500", "502", "503"}):
+                raise
+            # A successful empty SIA2 response is still a capability check: it
+            # proves that the documented search endpoint accepted the request.
+            self._sia(DiscoveryQuery(region=SkyRegion(ra_deg=0.0, dec_deg=0.0, radius_deg=0.01), release="spherex_dr1"))
+            detail = "IRSA SIA2 reachable after TAP failure; no credentials required"
+        return AccessReport(source_id=SOURCE_ID, checked_at=datetime.now(UTC), detail=detail)
+
+    # -- SIA2 fallback ----------------------------------------------------------
+
+    @staticmethod
+    def _sia_uri(access_url: str) -> str:
+        """Accept only the documented on-premises FITS URLs returned by SIA2."""
+        parsed = urllib.parse.urlsplit(access_url)
+        if parsed.scheme != "https" or parsed.netloc != urllib.parse.urlsplit(IRSA_BASE).netloc:
+            raise ValueError("SIA2 access_url is not an IRSA on-premises HTTPS URL")
+        uri = parsed.path.lstrip("/")
+        if not uri.startswith("ibe/data/spherex/") or ".." in uri:
+            raise ValueError("SIA2 access_url is not a SPHEREx IBE product path")
+        return uri
+
+    def _sia_collections(self, query: DiscoveryQuery) -> tuple[str, ...]:
+        filters = dict(query.filters)
+        requested = [c for c in (filters.get("collections", "").split(",") + ([query.release] if query.release else [])) if c]
+        if not requested:
+            return SIA_COLLECTIONS
+        unknown = sorted(set(requested) - set(SIA_COLLECTIONS))
+        if unknown:
+            raise HeimdallError.of(ErrorCode.RELEASE_UNAVAILABLE,
+                                   "SIA2 fallback supports current DR1/QR3 collections only", collections=",".join(unknown))
+        return tuple(sorted(set(requested)))
+
+    def _sia(self, query: DiscoveryQuery) -> list[dict[str, str]]:
+        """Search current SPHEREx images through IRSA's documented SIA2 CSV API.
+
+        Results are normalised to the internal TAP-row shape so all existing
+        filtering, de-duplication and provenance logic remains shared.
+        """
+        filters = dict(query.filters)
+        # Validate common filters before any network request, as TAP does.
+        self._where(query)
+        dets = {d.strip() for d in filters.get("detectors", "1,2,3,4,5,6").split(",")}
+        mjd_start = float(filters["mjd_start"]) if filters.get("mjd_start") else None
+        mjd_end = float(filters["mjd_end"]) if filters.get("mjd_end") else None
+        region = query.region
+        rows: list[dict[str, str]] = []
+        for collection in self._sia_collections(query):
+            params = {"COLLECTION": collection,
+                      "POS": f"CIRCLE {region.ra_deg:.10f} {region.dec_deg:.10f} {region.radius_deg:.10f}",
+                      "RESPONSEFORMAT": "CSV"}
+            url = SIA + "?" + urllib.parse.urlencode(params)
+            resp = self._http.request("GET", url)
+            text = resp.body.decode("utf-8", errors="replace")
+            if text.lstrip().startswith("<"):
+                raise HeimdallError.of(ErrorCode.DATA_MALFORMED, "SIA2 returned XML instead of requested CSV")
+            reader = csv.DictReader(io.StringIO(text))
+            raw_rows = list(reader)
+            if reader.fieldnames is None:
+                raise HeimdallError.of(ErrorCode.DATA_MALFORMED, "SIA2 response has no header row")
+            for raw in raw_rows:
+                # These are standard SIA2/ObsCore CSV fields.  Do not infer an
+                # observation from a row that lacks a retrievable FITS URL.
+                access_url = (raw.get("access_url") or "").strip()
+                match = _SIA_PRODUCT.search(urllib.parse.urlsplit(access_url).path)
+                if not match:
+                    raise HeimdallError.of(ErrorCode.DATA_MALFORMED,
+                                           "SIA2 row has no recognisable SPHEREx Level-2 FITS identifier")
+                detector = match.group("det")
+                if detector not in dets:
+                    continue
+                try:
+                    t_min, t_max = float(raw["t_min"]), float(raw["t_max"])
+                    em_min, em_max = float(raw["em_min"]), float(raw["em_max"])
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise HeimdallError.of(ErrorCode.DATA_MALFORMED,
+                                           "SIA2 row lacks valid ObsCore time or spectral bounds") from exc
+                if mjd_start is not None and t_max < mjd_start:
+                    continue
+                if mjd_end is not None and t_min > mjd_end:
+                    continue
+                # The product filename, rather than an archive-specific
+                # ObsCore obs_id convention, is the stable exposure/detector
+                # identifier used by direct retrieval.
+                version = re.search(r"/l2b-v([^/]+)/", urllib.parse.urlsplit(access_url).path)
+                try:
+                    uri = self._sia_uri(access_url)
+                except ValueError as exc:
+                    raise HeimdallError.of(ErrorCode.DATA_MALFORMED, str(exc)) from None
+                rows.append({"collection": (raw.get("obs_collection") or collection).strip(),
+                             "observationid": match.group("obs"), "energy_bandpassname": f"SPHEREx-D{detector}",
+                             "energy_bounds_lower": str(em_min), "energy_bounds_upper": str(em_max),
+                             "time_bounds_lower": str(t_min), "time_bounds_upper": str(t_max),
+                             "provenance_version": version.group(1) if version else "",
+                             "uri": uri, "contentchecksum": "", "contentlength": ""})
+        return rows
 
     def _where(self, query: DiscoveryQuery) -> list[str]:
         r = query.region
@@ -153,23 +262,34 @@ class IrsaSpherexSource(DataSource):
                 "FROM spherex.plane p JOIN spherex.artifact a ON a.planeid = p.planeid "
                 "JOIN spherex.observation o ON o.obsid = p.obsid WHERE " + " AND ".join(self._where(query)) +
                 " ORDER BY p.time_bounds_lower, p.energy_bandpassname")
-        rows = self._tap(adql)
+        try:
+            rows = self._tap(adql)
+            discovery_source = TAP_SOURCE
+        except HeimdallError as exc:
+            # A malformed TAP answer is an adapter/data contract issue, not a
+            # reason to switch services.  Only a TAP timeout or backend 5xx
+            # gets the independently documented SIA2 route.
+            status = exc.info.detail.get("http_status")
+            if self._settings.offline or not (exc.code is ErrorCode.ARCHIVE_TIMEOUT or status in {"500", "502", "503"}):
+                raise
+            rows = self._sia(query)
+            discovery_source = "IRSA SIA2 (current DR1/QR3 image collections) after TAP failure"
         now = datetime.now(UTC)
         origin = DataOrigin.CACHED if self.last_tap_from_cache else DataOrigin.LIVE
         prov = Provenance(origin=origin, retrieved_at=now, software_version=__version__,
-                          notes="discovery metadata from IRSA TAP" + (" (cached response, offline)" if self.last_tap_from_cache else ""))
+                          notes="discovery metadata from " + discovery_source + (" (cached response, offline)" if self.last_tap_from_cache else ""))
         if not rows:
             return DiscoveryResult(outcome=ResultOutcome.NO_OBSERVATIONS, observations=(), provenance=prov)
         missing = [c for c in REQUIRED_COLUMNS if c not in rows[0]]
         if missing:
-            raise HeimdallError.of(ErrorCode.DATA_MALFORMED, f"TAP response lacks columns: {missing}")
+            raise HeimdallError.of(ErrorCode.DATA_MALFORMED, f"discovery response lacks columns: {missing}")
         failed = []
         # One exposure of one detector may be listed by several releases (e.g. QR2 and QR3 reprocessing). Counting
         # both would double the evidence, so the newest release is kept and the others are recorded on it.
         chosen: dict[str, tuple[int, Observation, list[str]]] = {}
         for i, row in enumerate(rows):
             try:
-                obs = self._observation(row, now)
+                obs = self._observation(row, now, discovery_source)
             except (ValueError, KeyError) as exc:
                 failed.append(FailedItem(ref=f"row {i}", error=ErrorInfo(code=ErrorCode.DATA_MALFORMED, message=str(exc))))
                 continue
@@ -186,7 +306,7 @@ class IrsaSpherexSource(DataSource):
             if superseded:
                 md = dict(obs.metadata)
                 md["superseded_listings"] = measured(",".join(sorted(set(superseded))), value_class=ValueClass.CATEGORICAL,
-                                                     origin=OriginInfo(kind=Origin.SOURCE_REPORTED, source=TAP_SOURCE))
+                                                     origin=OriginInfo(kind=Origin.SOURCE_REPORTED, source=discovery_source))
                 obs = Observation(obs_id=obs.obs_id, source_id=obs.source_id, provenance=obs.provenance, metadata=md)
             observations.append(obs)
         if failed:
@@ -194,7 +314,7 @@ class IrsaSpherexSource(DataSource):
                                    failed_items=tuple(failed))
         return DiscoveryResult(outcome=ResultOutcome.OK, observations=tuple(observations), provenance=prov)
 
-    def _observation(self, row: dict[str, str], now: datetime) -> Observation:
+    def _observation(self, row: dict[str, str], now: datetime, source: str = TAP_SOURCE) -> Observation:
         band = row["energy_bandpassname"].strip()
         m = re.fullmatch(r"SPHEREx-D([1-6])", band)
         if not m or not row["observationid"].strip() or not row["uri"].strip():
@@ -210,7 +330,7 @@ class IrsaSpherexSource(DataSource):
 
         def src(value, vc, unit=None, unc=None):
             return measured(value, value_class=vc, unit=unit, uncertainty=unc,
-                            origin=OriginInfo(kind=Origin.SOURCE_REPORTED, source=TAP_SOURCE))
+                            origin=OriginInfo(kind=Origin.SOURCE_REPORTED, source=source))
 
         md = {
             "observation_id": src(row["observationid"].strip(), ValueClass.IDENTIFIER),

@@ -1,5 +1,43 @@
 # Real-data verification: public SPHEREx QR2 data from IRSA (2026-10-29)
 
+## Current access recheck and NASA-target attempt (2026-11-15 IST)
+
+This section records a later operational check; it does **not** alter the
+historical QR2 validation reported below.
+
+- A minimal legacy TAP POST to `https://irsa.ipac.caltech.edu/TAP/sync`
+  (`SELECT TOP 1 observationid FROM spherex.observation`) returned HTTP 502.
+- The current IRSA-documented SIA2 query route,
+  `https://irsa.ipac.caltech.edu/SIA?COLLECTION=spherex_dr1&POS=CIRCLE+269.452+4.693+0.05&RESPONSEFORMAT=CSV`, also returned HTTP 502.
+  Thus SIA2 is a documented future discovery route, but it was not an
+  operational fallback at the time of this check.
+- A direct on-premises DR1 FITS URL from an earlier live archive response did
+  respond (HTTP 200/206). A bounded cutout retrieval succeeded for
+  `2025W33_2C_0321_1D6` (D6; MJD 60902.865381). Its SHA-256 was
+  `f6bb5740841c7381ad86e6334038dc09fe565045157fd4e5473435ec4c1e1f8a`.
+  HEIMDALL ingestion passed its required-HDU, array-shape, units, WCS,
+  finite-pixel, flag-vocabulary, spectral-WCS, time, detector, fine-astrometry
+  and L2-DQA checks. A forced measurement at the **unassociated cutout centre**
+  was 118.8 +/- 99.6 uJy at 4.9156 um (S/N 1.19); its centroid fit fell back to
+  the fixed position. This is neither a detection nor a measurement of any NASA
+  target.
+- Bounded target attempts are saved in `.heimdall/state/targets/` and
+  `.heimdall/verification/2026-11-15-targets/`: NASA-01 and NASA-02 reached
+  SPHEREx discovery but received HTTP 502; NASA-03 could not resolve through
+  CatWISE because IRSA returned HTTP 502; NASA-04 and NASA-05 discovery timed
+  out. All five results are `BLOCKED` / `FAILED`, have zero retrieved target
+  products, and must not be interpreted as non-detections.
+
+The IRSA user guide now states that new work should search DR1 and QR3 using
+SIA2; QR2 remains directly downloadable but is no longer searchable. The
+adapter now retains TAP for compatibility and falls back on TAP HTTP 500/502/503
+to SIA2's documented ObsCore CSV response, accepting only validated current
+DR1/QR3 fields and IRSA on-premises FITS URLs. Transport failures and malformed
+responses still fail explicitly; they are never converted into empty coverage.
+The fallback has transport-level tests, but could not be live-confirmed in this
+check because the IRSA host also timed out. `scripts/run_nasa_targets.sh` now
+bounds its health checks rather than waiting indefinitely.
+
 **What this is:** an end-to-end exercise of the HEIMDALL engine on genuine,
 public SPHEREx Level 2 images. **What it is not:** scientific validation.
 No significance was validated, no candidate reached `ATTEND` or `WATCH`, and
