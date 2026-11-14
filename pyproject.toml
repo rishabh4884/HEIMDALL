@@ -1,0 +1,13 @@
+[project]
+name = "heimdall"
+version = "0.2.0"
+description = "Evidence-first investigation platform for SPHEREx observations"
+readme = "README.md"
+# Uses StrEnum and datetime.UTC (3.11+).
+requires-python = ">=3.11"
+# The scientific engine needs numerical, FITS/WCS and coordinate libraries.
+# heimdall.contracts itself still depends only on the standard library.
+dependencies = ["numpy>=2.0", "scipy>=1.13", "astropy>=7.0"]
+
+[project.optional-dependencies]
+tls = ["certifi"]

@@ -1,0 +1,16 @@
+.DS_Store
+
+# Local secrets: never commit. Only the placeholder template is tracked.
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Local data cache and generated artifacts (check licensing before sharing any data)
+.heimdall/

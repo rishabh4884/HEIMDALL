@@ -1,0 +1,310 @@
+"""Command-line interface to the HEIMDALL scientific engine.
+
+    python3 -m heimdall version | check | sources | access | coverage | investigate | runs |
+                        inspect | reinvestigate | validate | reproduce | skymap | playback | export | config | cache | demo
+
+Run ``python3 -m heimdall <command> -h`` for options. ``check`` and every
+command read ``./.env`` if present, then the environment; secrets are never
+printed. Exit codes: 0 success, 1 operation failed, 2 usage or configuration
+error.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+from . import SCHEMA_VERSION, __version__
+from .config import load_settings
+from .contracts.outcomes import ErrorCode, HeimdallError
+from .data_access.registry import default_registry
+
+USAGE = "usage: python3 -m heimdall {version|check|sources|access|coverage|investigate|runs|inspect|reinvestigate|validate|reproduce|skymap|playback|export|config|cache|demo}"
+
+
+def _env_file() -> Path | None:
+    p = Path(".env")
+    return p if p.is_file() else None
+
+
+def _check() -> int:
+    try:
+        settings = load_settings(env_file=_env_file())
+    except HeimdallError as exc:
+        print(f"configuration error [{exc.code}]: {exc.info.message}", file=sys.stderr)
+        return 2
+    print("HEIMDALL configuration")
+    for key, value in settings.summary().items():
+        print(f"  {key}: {value}")
+    print(f"  registered adapters: {', '.join(default_registry.available()) or '(none yet)'}")
+    try:
+        default_registry.create(settings)
+    except HeimdallError as exc:
+        status = "not ready" if exc.code in (ErrorCode.SOURCE_NOT_CONFIGURED, ErrorCode.CONFIG_INVALID) else "error"
+        print(f"  data source: {status} [{exc.code}] {exc.info.message}")
+        return 0 if exc.code is ErrorCode.SOURCE_NOT_CONFIGURED else 1
+    print("  data source: adapter created (access not checked; run 'access')")
+    return 0
+
+
+def _ints(text: str | None) -> list[int] | None:
+    return [int(x) for x in text.split(",") if x.strip()] if text else None
+
+
+def _strs(text: str | None) -> list[str] | None:
+    return [x.strip() for x in text.split(",") if x.strip()] if text else None
+
+
+def _print(data, as_json: bool) -> None:
+    if as_json:
+        print(json.dumps(data, indent=1, sort_keys=True, default=str))
+    elif isinstance(data, dict):
+        for k, v in data.items():
+            print(f"{k}: {json.dumps(v, default=str) if isinstance(v, (dict, list)) else v}")
+    elif isinstance(data, list):
+        for item in data:
+            print(json.dumps(item, default=str))
+    else:
+        print(data)
+
+
+def _print_summary(s: dict) -> None:
+    print(f"run {s['run_id']}  [{s['data_origin']}]  execution={s['status']['execution']} outcome={s['status']['outcome']}")
+    if s["data_origin"] == "SYNTHETIC":
+        print("  SYNTHETIC DATA - NOT ASTRONOMICAL OBSERVATIONS")
+    o = s["observations"]
+    print(f"  observations: {o['included']}/{o['total']} usable, {o['failed_items']} failed item(s); epochs {s['epochs']}")
+    print(f"  detections {s['detections']}, sources {s['sources']}, tracks {s['tracks']}")
+    print(f"  candidates by attention: {s['candidates_by_attention'] or '{}'}")
+    for name, outcome, n in s["validation"]:
+        print(f"  validation {name}: {outcome} (n={n})")
+    px = s.get("planet_x") or {}
+    if px:
+        region = px["region"]
+        print(f"  Planet X region status: {region['status']} ({region.get('statement') or region.get('reason')})")
+        for c in px.get("candidates", []):
+            print(f"  Planet X evaluation {c['candidate_id']}: {c['status']}")
+    for w in s["warnings"]:
+        print(f"  warning: {w}")
+    print(f"  results_hash {s['results_hash']}")
+
+
+def _parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="python3 -m heimdall", description="HEIMDALL scientific engine")
+    sub = p.add_subparsers(dest="command", required=True)
+    sub.add_parser("version", help="print software and schema versions")
+    sub.add_parser("check", help="validate configuration (never prints secrets)")
+    s = sub.add_parser("sources", help="list registered data sources")
+    s.add_argument("--json", action="store_true")
+    s = sub.add_parser("access", help="check access to a data source (contacts the source)")
+    s.add_argument("source")
+    s.add_argument("--local-root")
+
+    def region(sp):
+        sp.add_argument("--source", required=True, help="irsa-spherex or local-fits")
+        sp.add_argument("--ra", type=float, required=True, help="ICRS right ascension, degrees")
+        sp.add_argument("--dec", type=float, required=True, help="ICRS declination, degrees")
+        sp.add_argument("--radius", type=float, required=True, help="region radius, degrees")
+        sp.add_argument("--detectors", help="comma-separated detector numbers 1-6")
+        sp.add_argument("--collections", help="comma-separated IRSA collections, e.g. spherex_qr2")
+        sp.add_argument("--mjd-start", type=float)
+        sp.add_argument("--mjd-end", type=float)
+        sp.add_argument("--local-root", help="directory for --source local-fits")
+
+    s = sub.add_parser("coverage", help="list observations covering a region (no pixels retrieved)")
+    region(s)
+    s.add_argument("--json", action="store_true")
+    s = sub.add_parser("investigate", help="run the full investigation pipeline on a region")
+    region(s)
+    s.add_argument("--max-observations", type=int, help="evenly spaced selection in time")
+    s.add_argument("--cutout-size", type=float, help="IRSA cutout size in degrees (default 2 x radius)")
+    s.add_argument("--validate", action="store_true", help="run the validation procedures on these images")
+    s.add_argument("--no-calibration", action="store_true", help="do not fetch any calibration product")
+    s.add_argument("--calibration-products", choices=["epsf", "full"], default="epsf",
+                   help="full adds the CWAVE/CBAND spectral WCS and the per-pixel solid-angle map (about 50 MB per detector)")
+    s.add_argument("--no-context", action="store_true", help="do not query Gaia DR3 or JPL SB Ident")
+    s.add_argument("--config", type=Path, help="engine configuration JSON (see 'config template')")
+    s.add_argument("--label")
+    s.add_argument("--out", type=Path, help="run directory (default: <state_dir>/runs/<run_id>)")
+    s.add_argument("--no-svg", action="store_true")
+    s.add_argument("--quiet", action="store_true")
+    s = sub.add_parser("runs", help="list stored investigations")
+    s.add_argument("--json", action="store_true")
+    s = sub.add_parser("inspect", help="inspect a stored investigation")
+    s.add_argument("run", help="run id or run directory")
+    s.add_argument("--section", default="summary")
+    s.add_argument("--id", dest="item_id")
+    s.add_argument("--json", action="store_true")
+    s = sub.add_parser("validate", help="re-run an investigation with validation, or run the independent self-checks")
+    s.add_argument("run", nargs="?")
+    s.add_argument("--self-check", action="store_true")
+    s.add_argument("--json", action="store_true")
+    s = sub.add_parser("reinvestigate", help="rebuild the scientific investigations of a saved run offline (no detection, no download)")
+    s.add_argument("run")
+    s.add_argument("--out", type=Path, help="write the rebuilt investigations to this JSON file")
+    s = sub.add_parser("reproduce", help="re-run a stored investigation and compare results hashes")
+    s.add_argument("run")
+    s = sub.add_parser("skymap", help="sky-map layers of a stored investigation")
+    s.add_argument("run")
+    s.add_argument("--svg", type=Path, help="also write an SVG rendering")
+    s.add_argument("--viewport", nargs=3, type=float, metavar=("RA", "DEC", "FOV"))
+    s.add_argument("--json", action="store_true")
+    s = sub.add_parser("playback", help="time-ordered observation frames of a stored investigation")
+    s.add_argument("run")
+    s.add_argument("--mjd-start", type=float)
+    s.add_argument("--mjd-end", type=float)
+    s.add_argument("--json", action="store_true")
+    s = sub.add_parser("export", help="export results as JSON or CSV")
+    s.add_argument("run")
+    s.add_argument("--what", required=True, choices=["candidates", "detections", "sources", "observations", "validation"])
+    s.add_argument("--format", default="json", choices=["json", "csv"])
+    s.add_argument("--out", type=Path)
+    s = sub.add_parser("config", help="show, hash or template the engine configuration")
+    s.add_argument("action", choices=["show", "hash", "template"])
+    s.add_argument("--config", type=Path)
+    s = sub.add_parser("cache", help="list or clear cached products")
+    s.add_argument("action", choices=["list", "clear"])
+    s.add_argument("--older-than-days", type=float)
+    s = sub.add_parser("demo", help="SYNTHETIC end-to-end demonstration through the real pipeline")
+    s.add_argument("--out", type=Path)
+    s.add_argument("--no-validate", action="store_true")
+    s.add_argument("--small", action="store_true", help="smaller, faster scene")
+    return p
+
+
+def _run(args) -> int:
+    from .api import Engine
+    from .engine.config import EngineConfig
+    from .pipeline.runner import InvestigationRequest
+
+    cfg_path = getattr(args, "config", None)
+    engine = Engine.from_environment(_env_file(), cfg_path if args.command == "investigate" else None)
+    if args.command == "sources":
+        _print(engine.sources(), args.json)
+    elif args.command == "access":
+        _print(engine.check_access(args.source, args.local_root), False)
+    elif args.command == "coverage":
+        cov = engine.coverage(args.source, args.ra, args.dec, args.radius, detectors=_ints(args.detectors),
+                              collections=_strs(args.collections), mjd_start=args.mjd_start, mjd_end=args.mjd_end,
+                              local_root=args.local_root)
+        if args.json:
+            _print(cov, True)
+        else:
+            print(f"{cov['outcome']}: {cov['n_observations']} observation(s); per detector {cov['per_detector']}; "
+                  f"{len(cov['epochs'])} epoch(s)")
+            for e in cov["epochs"]:
+                print(f"  epoch {e['index']}: MJD {e['mjd_start']:.3f}-{e['mjd_end']:.3f}, {e['n_observations']} observation(s)")
+            if cov["note"]:
+                print(f"  {cov['note']}")
+    elif args.command == "investigate":
+        req = InvestigationRequest(ra_deg=args.ra, dec_deg=args.dec, radius_deg=args.radius, source_id=args.source,
+                                   detectors=_ints(args.detectors), collections=_strs(args.collections),
+                                   mjd_start=args.mjd_start, mjd_end=args.mjd_end, max_observations=args.max_observations,
+                                   cutout_size_deg=args.cutout_size, run_validation=args.validate,
+                                   calibration="none" if args.no_calibration else "auto", label=args.label,
+                                   local_root=args.local_root, context="none" if args.no_context else "auto",
+                                   calibration_products=args.calibration_products)
+        progress = None if args.quiet else (lambda stage, msg: print(f"[{stage}] {msg}", file=sys.stderr))
+        result, run_dir = engine.investigate(req, progress=progress, svg=not args.no_svg, out_dir=args.out)
+        from .api import summarize
+        _print_summary(summarize(result))
+        print(f"  saved to {run_dir}")
+        return 0 if result["status"]["execution"] != "FAILED" else 1
+    elif args.command == "runs":
+        _print(engine.runs(), args.json)
+    elif args.command == "inspect":
+        data = engine.inspect(args.run, args.section, args.item_id)
+        if args.section == "summary" and not args.json:
+            _print_summary(data)
+        else:
+            _print(data, True)
+    elif args.command == "validate":
+        if args.self_check:
+            checks = engine.self_check()
+            for c in checks:
+                print(f"{c['state']:7s} {c['check']}: {c['detail']}")
+            return 0 if all(c["state"] == "PASSED" for c in checks) else 1
+        if not args.run:
+            print("validate needs a run id/directory or --self-check", file=sys.stderr)
+            return 2
+        out = engine.validate(args.run)
+        if args.json:
+            _print(out, True)
+        else:
+            _print_summary(out["summary"])
+            print(f"  saved to {out['run_dir']}")
+    elif args.command == "reinvestigate":
+        inv = engine.reinvestigate(args.run, args.out)
+        print(f"{inv['n_investigations']} investigations rebuilt offline from run {inv['source_run']['run_id']}")
+        print("interpretation:", inv["interpretation_counts"])
+        if args.out:
+            print(f"written to {args.out}")
+    elif args.command == "reproduce":
+        out = engine.reproduce(args.run)
+        _print(out, False)
+        return 0 if out["identical"] else 1
+    elif args.command == "skymap":
+        viewport = tuple(args.viewport) if args.viewport else None
+        sm = engine.skymap(args.run, viewport)
+        if args.svg:
+            from .skymap.svg import render_svg
+            args.svg.write_text(render_svg(sm), encoding="utf-8")
+            print(f"SVG written to {args.svg}")
+        if args.json or not args.svg:
+            _print(sm, True)
+    elif args.command == "playback":
+        _print(engine.playback(args.run, args.mjd_start, args.mjd_end), True)
+    elif args.command == "export":
+        text = engine.export(args.run, args.what, args.format)
+        if args.out:
+            args.out.write_text(text, encoding="utf-8")
+            print(f"written to {args.out}")
+        else:
+            print(text)
+    elif args.command == "config":
+        cfg = EngineConfig.load(args.config) if args.config else EngineConfig()
+        if args.action == "hash":
+            print(cfg.hash)
+        else:
+            print(json.dumps(cfg.to_dict(), indent=1, sort_keys=True))
+    elif args.command == "cache":
+        from .data_access.cache import ProductCache
+        cache = ProductCache(Path(engine.settings.cache_dir) / "irsa-spherex")
+        if args.action == "list":
+            _print(cache.entries(), False)
+        else:
+            print(f"removed {cache.invalidate(older_than_days=args.older_than_days)} cached product(s)")
+    elif args.command == "demo":
+        print("Generating a SYNTHETIC scene (not astronomical data) and running the full pipeline ...", file=sys.stderr)
+        result, run_dir = engine.demo(args.out, validate=not args.no_validate, small=args.small)
+        from .api import summarize
+        _print_summary(summarize(result))
+        print(f"  saved to {run_dir} (skymap.svg, skymap.json, investigation.json, events.jsonl)")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args_list = sys.argv[1:] if argv is None else argv
+    parser = _parser()
+    try:
+        args = parser.parse_args(args_list)
+    except SystemExit as exc:
+        return int(exc.code) if isinstance(exc.code, int) else 2
+    if args.command == "version":
+        print(f"heimdall {__version__} (schema {SCHEMA_VERSION})")
+        return 0
+    if args.command == "check":
+        return _check()
+    try:
+        return _run(args)
+    except HeimdallError as exc:
+        print(f"error [{exc.code}]: {exc.info.message}", file=sys.stderr)
+        for k, v in exc.info.detail.items():
+            print(f"  {k}: {v}", file=sys.stderr)
+        return 2 if exc.code in (ErrorCode.INPUT_INVALID, ErrorCode.CONFIG_INVALID, ErrorCode.SOURCE_NOT_CONFIGURED) else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
