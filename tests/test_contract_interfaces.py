@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from heimdall.api import Engine
+from heimdall.config import load_settings
 
 DOC = (Path(__file__).resolve().parent.parent / "docs" / "OUTPUT_SCHEMA.md").read_text(encoding="utf-8")
 INV_KEYS = {"investigation_id", "subject", "candidate_ids", "patterns", "evidence", "dependency_groups", "evidence_relations", "hypotheses",
@@ -16,7 +17,9 @@ class ContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
-        cls.e = Engine()
+        # Disposable state: the demo saves its run under the engine's state directory, never the developer's.
+        cls.e = Engine(settings=load_settings(environ={"HEIMDALL_STATE_DIR": str(Path(cls.tmp.name) / "state"),
+                                                       "HEIMDALL_CACHE_DIR": str(Path(cls.tmp.name) / "cache"), "HEIMDALL_OFFLINE": "1"}))
         cls.res, cls.rd = cls.e.demo(out_dir=Path(cls.tmp.name), validate=False, small=True)
 
     @classmethod

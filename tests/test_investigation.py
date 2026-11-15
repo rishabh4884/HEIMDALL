@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from heimdall.api import Engine
+from heimdall.config import load_settings
 from heimdall.engine import investigation
 from heimdall.engine.config import EngineConfig
 from heimdall.engine.evidence import ResultIndex, dependency_groups, extract
@@ -205,7 +206,9 @@ class PipelineAndInterfaces(unittest.TestCase):  # SYNTHETIC end to end (softwar
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
-        cls.engine = Engine()
+        # Disposable state: the demo saves its run under the engine's state directory, never the developer's.
+        cls.engine = Engine(settings=load_settings(environ={"HEIMDALL_STATE_DIR": str(Path(cls.tmp.name) / "state"),
+                                                       "HEIMDALL_CACHE_DIR": str(Path(cls.tmp.name) / "cache"), "HEIMDALL_OFFLINE": "1"}))
         cls.result, cls.run_dir = cls.engine.demo(out_dir=Path(cls.tmp.name), validate=False, small=True)
 
     @classmethod
