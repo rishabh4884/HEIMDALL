@@ -227,40 +227,66 @@ Live observations (UTC, evidence `.heimdall/verification/2026-11-15-submission/`
     the demo.
 - Tests: full suite 524 OK (5 live skipped); new `CancelAndRejectionTests`.
 
-## Integration plan (D-007, revised; pending, not executed)
+## Integration record (D-007; approved by the owner on 2026-11-15)
 
-No squash. No rewrite, force-push or merge until the owner explicitly approves the verified plan.
+The full individual commit history is kept; nothing is squashed. Steps and verification:
 
-1. Gate:
-   - all milestones are committed and pushed;
-   - the full suite is green;
-   - `scripts/demo_submission.sh --tests` passes;
-   - review is done and the ledger is final.
-2. Verify the cleanup in a disposable clone first:
-   - `git filter-branch --msg-filter` removes only the co-author trailer lines (and trailing blank lines);
-   - for every commit, compare tree hashes, author name/email/date and committer date with the originals; all must be identical;
-   - remaining message text must be unchanged and no trailer may remain;
-   - the full suite passes on the rewritten head.
-3. Present the verification to the owner and ask for explicit approval.
-4. After approval:
-   - push a backup branch of the current head;
-   - rewrite the development branch locally;
-   - `git push --force-with-lease=backend/submission-2026-11-15:<current head> origin backend/submission-2026-11-15`;
-   - verify with `git ls-remote`.
-5. Merge into `main` with a normal merge that keeps every commit:
-   - `git switch main && git pull --ff-only && git merge --no-ff backend/submission-2026-11-15`, or `--ff-only` if the owner prefers;
-   - run the full suite;
-   - `git push origin main` (a normal push).
+1. Local-only backup: `backup/submission-2026-11-15-pre-cleanup` at `86f6caa` (not pushed to `origin`). It is kept until the owner
+   confirms the GitHub `main` history.
+2. Co-author trailer lines were removed from the development-branch commit messages with
+   `git filter-branch --msg-filter` over `462c8b4..HEAD` (23 commits). Verification:
+   - every commit's tree hash, author name/email/date and committer name/email/date are identical to the backup's;
+   - every message is identical apart from the removed trailer lines, and none remain;
+   - the final tree equals the backup's;
+   - the base is unchanged (`462c8b4`);
+   - full suite 524 OK (5 live skipped).
+3. `git push --force-with-lease=backend/submission-2026-11-15:86f6caa origin backend/submission-2026-11-15` updated the remote from
+   `86f6caa` to `1264fcb` (lease held: nobody else had pushed).
+4. This ledger update is the final milestone commit on the branch. Then:
+   - `git merge --ff-only` into `main`;
+   - full suite;
+   - `git push origin main`;
+   - verify `main`'s individual history and metadata;
+   - delete the remote feature branch.
+
+Commit hashes cited earlier in this ledger and in `docs/DECISIONS.md` are the pre-cleanup hashes. Each maps one-to-one, with identical
+content, to the published hashes:
+
+| Pre-cleanup | Published |
+|---|---|
+| `c4a4751` | `93555bf` |
+| `91ee79d` | `bf9ba87` |
+| `05940e6` | `82bcf72` |
+| `1c0e47d` | `beca17d` |
+| `b37b785` | `a0c17fd` |
+| `51ff231` | `17e41a0` |
+| `441bb64` | `8ae26bb` |
+| `93f8b85` | `71b1396` |
+| `02d0a4f` | `b4f5984` |
+| `28db40c` | `45a44bf` |
+| `a808f33` | `7b235a3` |
+| `6fd9fa5` | `7d80d7c` |
+| `2850606` | `4c0c52d` |
+| `80ddc0a` | `20db4a8` |
+| `23457c8` | `54a5072` |
+| `cbb381c` | `0c0e754` |
+| `4096b6f` | `4ac93e6` |
+| `e5e286b` | `631db4f` |
+| `ee13af3` | `8d2c0a5` |
+| `bda5b7d` | `ad83ac8` |
+| `dbf9863` | `7cb6e8b` |
+| `38a2389` | `357f8f1` |
+| `86f6caa` | `1264fcb` |
 
 ## Deferred (explicitly out of today's scope; see `docs/BACKEND_MASTER_SPEC.md` for entry points)
 
 All-sky metadata crawl and mirror (spec §8–9), new ML models (§16), per-detector fidelity campaign (§11), first-class comparison records
-(§12), new detection families and pattern graph (§13–14), automated follow-up loop (§15), benchmark campaign (§21), PostgreSQL migration.
+for motion pairs and PSF/background matching (§12), new detection families and pattern graph (§13–14), automated follow-up loop (§15), benchmark campaign (§21), PostgreSQL migration.
 
 ## Active jobs / workers
 
-- Worker pid 97013 (`python3 -m heimdall data worker --max-idle 5`), started 08:59Z on the M11 code. Stop it gracefully with
-  `kill -TERM 97013`. Open jobs survive a stop and continue when any worker starts.
+- Worker pid 98970 (`python3 -m heimdall data worker --max-idle 10`), started 09:17Z on the final code (tree identical to `1264fcb`). Stop it gracefully with
+  `kill -TERM 98970`. Open jobs survive a stop and continue when any worker starts.
 - Open job `job:target_investigation:c03487f9482a` (coordinate RA 150.1, Dec 2.2) is `PREPARING_DATA` / `CATALOGUE_PENDING`: Gaia is
   unreachable at IRSA and ESA. Its deadline is 13:53:30Z; after that it is re-checked every 6 h for 7 days.
 - Inspect read-only with `python3 -m heimdall data jobs` and `python3 -m heimdall data status`.
