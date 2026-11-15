@@ -26,6 +26,7 @@ is given. Implementation: `heimdall/server.py` (stdlib only); tests: `tests/test
 | `GET /targets` | five NASA targets + saved-result summary | |
 | `GET /targets/{id}` | latest **usable** result (`heimdall.target_investigation/1.0`) | 404 if never completed |
 | `GET /targets/{id}/attempt` | latest attempt (can be a blocked attempt that did not replace the usable result) | 404 if none |
+| `GET /targets/{id}/claims` (also `/investigations/{tinv}/claims`) | `heimdall.claims/1.0`: `quick_answer`, `headline_claim`, `claims[]` with `claim_type` (MEASUREMENT, DETECTION, NON_DETECTION, UPPER_LIMIT, CONSISTENT_WITH, INCONCLUSIVE, NOT_ASSESSABLE, BLOCKED, LIMITED_BY_DATA), `values[]` with units and uncertainties, `method`, `evidence_refs` (JSON paths), `observations_used`, `does_not_establish`, `gate.checks[]` (8 defensibility checks), `downgraded_from` | the Quick Answer -> Evidence -> Deeper Dive path; show `claim_type` verbatim |
 | `GET /targets/{id}/versions` | every saved version, newest first: `status`, `supersedes`, `superseded_by`, `supersession_reason`, latest flags | use to show why a conclusion changed |
 | `GET /investigations/{tinv:...}` | one immutable saved version | older versions stay readable |
 | `GET /coverage?ra&dec&radius[&detectors][&offset&limit]` | `heimdall.data_status/1.0` + `observations[]` with footprints from the local index | never runs an analysis; the cone is snapped to a 0.01° grid (`queried_cone`, always containing the requested cone); unindexed -> `PREPARING` + job, `observations: null` |

@@ -12,6 +12,7 @@ Endpoints (prefix ``/api/v1``):
   GET  /targets/{target_id}            latest usable saved result (404 if none)
   GET  /targets/{target_id}/attempt    latest attempt (may differ from the latest usable result; 404 if none)
   GET  /targets/{target_id}/versions   every saved version (newest first) with supersession links
+  GET  /targets/{target_id}/claims     auditable claims of the latest usable result (heimdall.claims/1.0); also /investigations/{id}/claims
   GET  /investigations/{investigation_id}   an immutable saved investigation version
   GET  /coverage?ra&dec&radius[&detectors][&offset][&limit]   observations from the local index, or an INDEX job
   POST /investigations                 {"target_id": "NASA-01"} or {"ra":..,"dec":..,"category":..}, optional "options"
@@ -159,13 +160,19 @@ class Api:
                 return 200, self._read_json(self.targets_dir / tid / "latest_attempt.json", f"no recorded attempt for {tid}")
             if len(p) == 3 and p[2] == "versions":
                 return 200, self.versions(tid)
-        if route == ("GET", "investigations") and len(p) == 2:
+            if len(p) == 3 and p[2] == "claims":
+                from .targets.claims import build_claims
+                return 200, build_claims(self._read_json(self.targets_dir / tid / "latest.json", f"no saved investigation for {tid}"))
+        if route == ("GET", "investigations") and len(p) in (2, 3) and (len(p) == 2 or p[2] == "claims"):
             m = RE_INV.match(p[1])
             if not m:
                 raise ApiError(400, "INPUT_INVALID", "investigation id must look like tinv:<target>:<8 hex>")
             doc = self._read_json(self.targets_dir / m.group(1) / f"{m.group(2)}.json", f"no saved investigation {p[1]}")
             if doc.get("investigation_id") != p[1]:
                 raise ApiError(404, "NOT_FOUND", f"no saved investigation {p[1]}")
+            if len(p) == 3:
+                from .targets.claims import build_claims
+                return 200, build_claims(doc)
             return 200, doc
         if route == ("POST", "investigations") and len(p) == 1:
             return self.submit(body or {})

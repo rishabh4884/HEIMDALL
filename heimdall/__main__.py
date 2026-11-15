@@ -133,7 +133,7 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--no-svg", action="store_true")
     s.add_argument("--quiet", action="store_true")
     s = sub.add_parser("target", help="named (NASA-01..05) or coordinate-addressable target investigations")
-    s.add_argument("action", choices=["list", "resolve", "run", "show", "matrix", "reevaluate"])
+    s.add_argument("action", choices=["list", "resolve", "run", "show", "matrix", "reevaluate", "claims"])
     s.add_argument("target", nargs="?", help="NASA-01..NASA-05 or a name fragment")
     s.add_argument("--ra", type=float)
     s.add_argument("--dec", type=float)
@@ -406,6 +406,10 @@ def _target(engine, args) -> int:
         return 0
     if args.action == "show":
         _print(engine.target_result(args.target), True)
+        return 0
+    if args.action == "claims":  # auditable claims with the defensibility gate, derived from the saved result
+        from .targets.claims import build_claims
+        _print(build_claims(engine.target_result(args.target)), True)
         return 0
     if args.action == "reevaluate":  # decision-rule correction on saved measurements; creates a linked new version, never edits the old one
         from .targets.reevaluate import reevaluate_variability

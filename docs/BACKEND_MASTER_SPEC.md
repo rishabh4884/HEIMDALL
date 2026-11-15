@@ -27,7 +27,7 @@ Historical requirements from earlier conversations that are not in the repositor
 | S-17 | Statistical validation | partial | synthetic controls (REQ-014) | real-image injection-recovery deferred |
 | S-18 | Backend product contracts + transport | implemented (M2) | `docs/FRONTEND_HANDOFF.md`, `docs/OUTPUT_SCHEMA.md`, `docs/UI_BACKEND_REFERENCE.md` | auth integration point only (no identity provider) |
 | S-19 | Performance/operations | partial | `data status` metrics, worker heartbeat | measured budgets and clean-install test deferred |
-| S-20 | Auditable conclusions | implemented for target investigations | result `hypotheses[]`, evidence ids, `input_manifest`, `conclusion` wording | immutable report versions exist per investigation id; cross-version diff tool deferred |
+| S-20 | Auditable conclusions | implemented for target investigations | `heimdall.claims/1.0` (REQ-031): claim types, defensibility gate with downgrades, evidence paths; versions via `/targets/{id}/versions` (supersession links) | field-level cross-version diff deferred; blind-run investigations keep their own interpretation contract |
 | S-21 | Benchmark / metamorphic tests | deferred | — | entry point: `tests/` with frozen manifests from the store |
 
 Deferred items are not counted as done anywhere. Re-plan from this table after the submission.

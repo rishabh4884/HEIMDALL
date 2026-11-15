@@ -708,3 +708,66 @@ class ReevaluationTests(unittest.TestCase):
         (self.d / "latest.json").write_text(json.dumps(bad))
         with self.assertRaises(HeimdallError):
             reevaluate_variability(self.tmp, self.cfg, "NASA-02", reason="x")
+
+
+class ClaimTests(unittest.TestCase):
+    """heimdall.claims/1.0: verdict -> claim type, the defensibility gate and its downgrades (SYNTHETIC inputs)."""
+
+    def doc(self, **over):
+        cfg = EngineConfig()
+        ms = series_measurements([2000, 3500, 2000, 3600, 2100], n_controls=12)
+        var = analyse_variability(ms, cfg)
+        d = {"investigation_id": "tinv:NASA-04:0000cccc", "target": {"target_id": "NASA-04", "category": "VARIABLE_STAR"}, "data_origin": "REAL",
+             "status": {"execution": "COMPLETED"}, "measurements": ms, "analyses": {"variability": var},
+             "hypotheses": [{"slug": "calibration_artifact", "status": "CANNOT_EXCLUDE", "suggested_next_step": "compare detectors"}],
+             "products": [{"obs_id": m["obs_id"], "sha256": "ab" * 32, "release": "spherex_dr1", "retrieved_at": "2026-11-15T00:00:00+00:00",
+                           "access_reference": "ibe/x.fits"} for m in ms], "conclusion": {"quick_answer": "q"}}
+        d.update(over)
+        return d
+
+    def claim(self, out, analysis):
+        return next(c for c in out["claims"] if c["analysis"] == analysis)
+
+    def test_detection_with_complete_provenance_keeps_its_type_and_links_evidence(self):
+        from heimdall.targets.claims import build_claims
+        from heimdall.targets.claims import VARIABILITY_CLAIMS
+        d = self.doc()
+        out = build_claims(d)
+        v = self.claim(out, "variability")
+        expected = VARIABILITY_CLAIMS[d["analyses"]["variability"]["verdict"]][0]
+        self.assertIn(expected, ("DETECTION", "CONSISTENT_WITH"))  # single detector -> WITH_CAVEATS -> CONSISTENT_WITH
+        self.assertEqual(v["claim_type"], expected)
+        self.assertTrue(v["gate"]["passed"])
+        self.assertIn("analyses.variability.series", v["evidence_refs"])
+        self.assertEqual(out["headline_claim"], v["claim_id"])
+        self.assertEqual(self.claim(out, "forced_photometry")["claim_type"], "MEASUREMENT")
+        self.assertEqual(build_claims(self.doc())["claims"], out["claims"])  # deterministic, stable ids
+
+    def test_missing_provenance_downgrades_a_detection(self):
+        from heimdall.targets.claims import build_claims
+        d = self.doc()
+        d["products"][0]["sha256"] = None
+        v = self.claim(build_claims(d), "variability")
+        self.assertEqual(v["claim_type"], "INCONCLUSIVE")
+        self.assertIn(v["downgraded_from"], ("DETECTION", "CONSISTENT_WITH"))
+        self.assertIn("provenance_complete", v["gate"]["failed_required"])
+
+    def test_synthetic_data_cannot_carry_an_astronomical_detection(self):
+        from heimdall.targets.claims import build_claims
+        v = self.claim(build_claims(self.doc(data_origin="SYNTHETIC")), "variability")
+        self.assertEqual(v["claim_type"], "INCONCLUSIVE")
+        self.assertIn("real_vs_synthetic_distinguished", v["gate"]["failed_required"])
+
+    def test_blocked_execution_is_never_a_non_detection(self):
+        from heimdall.targets.claims import build_claims
+        out = build_claims(self.doc(status={"execution": "BLOCKED", "reason": "archive HTTP 502"}))
+        self.assertEqual([c["claim_type"] for c in out["claims"]], ["BLOCKED"])
+        self.assertIn("not a non-detection", out["claims"][0]["does_not_establish"][0])
+
+    def test_without_control_reference_variability_is_inconclusive_not_detected(self):
+        from heimdall.targets.claims import build_claims
+        cfg = EngineConfig()
+        ms = series_measurements([2000, 3500, 2000, 3600, 2100], n_controls=2)
+        v = self.claim(build_claims(self.doc(measurements=ms, analyses={"variability": analyse_variability(ms, cfg)})), "variability")
+        self.assertEqual(v["claim_type"], "INCONCLUSIVE")
+
