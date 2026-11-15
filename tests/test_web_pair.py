@@ -98,7 +98,7 @@ class PairTests(unittest.TestCase):
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
         base = f"http://127.0.0.1:{server.server_address[1]}"
-        for name in ("workbench.js", "sky.js", "hips.js", "charts.js", "records.js", "workbench.css"):
+        for name in ("api.js", "state.js", "jobs.js", "bands.js", "timeline.js", "twin.js", "views.js", "workbench.js", "workbench.css"):
             with urllib.request.urlopen(f"{base}/{name}", timeout=5) as r:
                 self.assertIn("default-src 'self'", r.headers["Content-Security-Policy"])
         for bad in ("/../server.py", "/web_pair.py", "/README.md"):

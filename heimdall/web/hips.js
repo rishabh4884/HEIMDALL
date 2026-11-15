@@ -205,9 +205,10 @@ export class SurveyImage {
     const atlas = this.load(this.atlasURL(), 2, true);
     if (!atlas) return;
     const { left, right, top, bottom, all } = geometry;
-    const width = Math.max(1, Math.min(720, Math.round(right - left)));
-    const height = Math.max(1, Math.round(width * (bottom - top) / (right - left)));
     const moving = performance.now() < (this.movingUntil || 0);
+    // While the camera moves, sample at half resolution (display only) to stay inside the frame budget; full resolution on settle.
+    const width = Math.max(1, Math.min(moving ? 360 : 720, Math.round(right - left)));
+    const height = Math.max(1, Math.round(width * (bottom - top) / (right - left)));
     const signature = [width, height, right - left, bottom - top, all, map.view.ra, map.view.dec, map.view.span, this.frame, this.contrast, this.generation, moving].join("/");
     if (signature !== this.signature) {
       this.signature = signature;

@@ -1,5 +1,29 @@
 # Running the HEIMDALL workbench
 
+Traceability for F01–F32, design decisions and verification evidence: `docs/FRONTEND_LEDGER.md`. To verify in a real browser, run
+`node scripts/browser_check.mjs --base http://127.0.0.1:8765`. It drives headless Chrome through 23 workflows and fails on any
+console error. Run `node --test tests/test_frontend_modules.mjs` for the pure modules.
+
+## Using the instrument
+
+- **Links and history.** Every deliberate change becomes a stable link:
+  - record, camera, wavelength plane, layers, filters and selection;
+  - epoch, tab, comparison pair, twin-view pair and Separate state.
+
+  Back and Forward restore it. Credentials are never part of a link.
+- **Search box.** Accepts registered target names, `tinv:` versions, run ids, observation ids, SHA-256 checksums, manifest and job
+  ids, and RA/Dec in decimal or h:m:s d:m:s.
+- **Pointer modes.** *Pan*, *Box* and *Lasso*. Coincident points open a chooser. *Select visible* and *Region & run → select
+  within radius* are the keyboard alternatives.
+- **Wavelength strip.** Shows all 102 DR1 planes, laid out per the IRSA metadata (planes 51 and 52 are intentionally blank).
+  Gold ticks are this record's measurements at their calibrated wavelengths. *Separate* splits the strip into six detector lanes;
+  the arrangement is illustrative.
+- **Time ribbon.** Plays only real epochs, spaced by elapsed time or in equal steps. Playback pauses on inspection or when the
+  page is hidden.
+- **Compare images.** Aligns two exact cached products on one north-up grid. Modes: side by side (cameras linked or
+  independent) and blink. A difference image is offered only when the server marks the pair comparable.
+- **Jobs.** Reconnects to durable jobs after a reload and never resubmits.
+
 From the repository root:
 
 ```sh

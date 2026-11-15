@@ -1,0 +1,113 @@
+# Frontend execution ledger (run 3, 2026-11-15)
+
+Starting point: `main` = `origin/main` = `91d4ddd26947ec066fa477bc4c5369bdbd09229e`, working tree clean. The audit snapshot S6
+(`…/work/heimdall-check`, no Git metadata) was compared file by file. It is an earlier state of the same workbench: the seven
+`heimdall/web` files differ by 5–172 lines, and `docs/WORKBENCH.md` did not exist yet. The current tree supersedes it.
+
+The recovered historical sources (S1–S5) were not re-read in this run. F-IDs and their provenance come from the attached
+preliminary ledger. **Historical recovery is not complete.** Exact original choreographies (Separate/Merge, guided demo) remain
+unrecovered, and the interactions below that stand in for them are new design decisions.
+
+Status vocabulary:
+- **Complete**: implemented, with acceptance evidence.
+- **Partial**: implemented with a stated gap.
+- **Dependency**: blocked by a missing backend, data or service element, named in the row.
+- **Deferred**: not started, for the reason given.
+
+## Verification evidence
+
+| Evidence | Command | Result |
+|---|---|---|
+| Browser workflows (real UI, real API, real saved data) | `python3 -m heimdall serve --port 8777` then `node scripts/browser_check.mjs --base http://127.0.0.1:8777` | 23/23 checks; 0 console errors or uncaught exceptions |
+| Frontend pure modules | `node --test tests/test_frontend_modules.mjs tests/test_hips.mjs` | 17/17 |
+| Twin-view pair endpoint and module serving | `python3 -W error -m unittest tests.test_web_pair` | 5/5. Synthetic fixtures; includes a 25° detector rotation that aligns after resampling |
+| Full backend suite | `python3 -W error -m unittest discover -s tests -t .` | 577 passed, 5 opt-in live tests skipped |
+| Pan responsiveness | browser check "pan responsiveness" | See the measurement below |
+
+**Pan responsiveness measurement**
+- Setup: macOS on Apple Silicon, headless Chrome, 1440×1000 viewport, NASA-02 field with the DR1 survey layer on.
+- Method: 60 pointer moves at 16 ms intervals; animation-frame intervals recorded while dragging.
+- Before: p50 16.8–33.3 ms, p95 33.4–50.0 ms across runs. The survey layer was re-sampled at full 720 px width on every move.
+- After (survey sampled at half resolution while the camera moves; full resolution on settle): p50 16.7 ms, p95 16.7–16.8 ms,
+  max 16.8–33.3 ms in two consecutive runs. That is a steady ~60 fps.
+- The ~60 fps / <100 ms figures are engineering targets, not historical promises.
+
+The browser checks run against real saved records:
+- NASA-01..05;
+- real field run `R20261115T103457-def358a0`;
+- a synthetic field run, which carries the watermark;
+- real cached DR1 cutouts of NASA-02 for the twin views.
+
+## Traceability (F01–F32)
+
+| ID | Status | Implementation (files) | Acceptance evidence | Known limits / next action |
+|---|---|---|---|---|
+| F01 Explore → Discover → Investigate → Understand | Complete | `workbench.js` (one record and selection model), `state.js` | Browser: map → chart → inspector share `obs_id`; the URL `sel=` matches | — |
+| F02 Coordinate sky, pan/zoom, grid, overlays | Complete | `sky.js` (`orientation()` measures north/east and scale from the projection), compass and scale bar | `test_hips.mjs` RA-seam round trips; screenshots show the rotated compass at Dec −56.8° | Orientation is clamped at Dec ±89.999° |
+| F03 Object search and coordinate entry | Partial | Omnibox: targets, runs, `tinv:`/obs/sha/manifest/job ids, decimal and sexagesimal coordinates | Browser: "barnard" → NASA-01; `17:57:48.5 +04:41:36` → field | **Dependency**: no general name resolver (an external service; not configured, and outbound queries would expose searches). The UI says so |
+| F04 Box/lasso region selection | Complete | `sky.js` (`within`, `hitAll`), `views.regionBlock`; keyboard: *Select visible* and *Region & run → select within radius* | Browser: box → "16 observations, 1 reference"; deterministic order is unit-tested | Selection covers plotted records only, which is stated in the UI |
+| F05 102-band strip | Complete | `bands.js` (published layout: band = detector, frame = 17·(band−1)+(channel−1), planes 51/52 blank), strip in `workbench.js` | Browser: 102 cells, blanks 51 and 52, End key → 102, 16 measurement marks | Survey bandwidths are absent from the HiPS metadata, so the planes are labelled "nominal". Measurement marks use their calibrated wavelength and source |
+| F06 Separate/Merge | Complete (new design) | `toggleSeparate` (FLIP animation; instant under reduced motion); six detector lanes | Browser: reversible; captions say "Illustrative" and "does not coadd" | The original choreography was not recovered; this is decision FD-1 below |
+| F07 Twin view, blink, difference | Complete with limits | `GET /evidence/pair` (`heimdall/web_pair.py`), `twin.js` | Real NASA-02 D2 pair: COMPARABLE_WITH_LIMITATIONS with a difference image. D2 vs D5: NOT_COMPARABLE, difference disabled with its reason. Synthetic alignment test | No PSF matching, WCS-only registration and correlated resampling noise are all shown beside the images |
+| F08 Time ribbon | Complete | `timeline.js`, ribbon in `workbench.js` | Browser: 12 real epochs; elapsed and equal spacing differ; Home key; play and pause. Pauses on hidden page, inspection or record change | Map, chart and twin view follow the epoch (with *Compare images* open, image B becomes the same-detector observation of the current epoch) |
+| F09 Wavelength-aware temporal comparability | Complete | `charts.js` (`chartModel('flux')` connects only points within one comparable series) | Browser and screenshot; series listed with their comparability status | — |
+| F10 Coverage browsing ≠ analysis | Complete | `views.coveragePage`; runs only from *Region & run* | Browser: `?field=` issues no POST; no POST during any check except explicit actions | — |
+| F11 Known-object checkpoints | Complete (decision FD-2) | The tour and library load saved results; rerunning is explicit | Browser: five targets, 0 POSTs | No auto-run: NASA-02 predates frozen manifests, so a POST would queue archive work |
+| F12 Quick answer → Evidence → Deeper dive | Complete | `views.js` | Browser NASA-02 quick answer; `status-grid` separates execution, test status, claim and method validity | — |
+| F13 Hypotheses with supporting/contradicting evidence | Complete | `views.hypothesesGrid` (side by side: tests run and unavailable, assumptions, groups, next step; open alternatives) | Browser screenshots | — |
+| F14 Motion, flux, spectra, tables | Complete | `charts.js`: error bars, bandwidth bars, detector boundaries, uncovered detectors shaded, hollow excluded points with reasons, censored upper limits, a table for every chart, a centred single point, padded equal values, a zero line | Browser and screenshots | Large tables are capped at 400 rows rather than virtualized (see F30) |
+| F15 Forward and reverse provenance | Complete | `records.traceView`, lookup | Browser: claim → observation → product → reverse lookup → 2 dependent versions | — |
+| F16 History, comparison, refusal | Complete | `views.historyPage`, `compareView` (structured changes; NOT_COMPARABLE shows no changes) | Browser: comparable NASA-02 pair; refused NASA-01 vs NASA-02 | — |
+| F17 Context kept across band, time and view changes | Complete | Separate slices for record, camera, plane, filters, selection, frame and compare | Browser: plane and epoch changes keep record, camera and selection | — |
+| F18 Share and reopen exact context | Complete | `state.serialize/parse` (record, camera, plane, layers, filters, selection, epoch, tab, compare, twin pair, separate) | Unit round-trip; credential parameters ignored; browser: an invalid link keeps plane and camera and explains the missing record | Reopening needs a server holding the same data, which the UI states |
+| F19 Durable jobs | Complete (unit) / Partial (live) | `jobs.js`: 3 s cadence, 5 s back-off, dormant during auto-recovery, paused while hidden, ids survive reload, never resubmits | Unit tests with fake timers; browser jobs dialog lists server jobs without a POST | A live preparation → reload → completion run in the browser was not exercised: IRSA discovery was down today and the shared state has a worker |
+| F20 Capability-aware controls | Partial | Data status renders `/capabilities` (per detector, analyses, not-available reasons); *Region & run* shows limits; worker banner | Browser: NOT_VALIDATED is rendered | **Next:** disable individual run options from `capabilities.not_available` |
+| F21 Follow-up plans and budgets | Complete | `views.followupView` (distinguishes, predictions, cost, expected value, availability reason, budget, stopping reason; run once via `POST /followup/{id}/run`) | NASA-02 plan rendered with its stopping reason | — |
+| F22 Cached and offline operation | Partial | Offline banner from `/health`; imagery status explains offline; cached records stay readable | — | **Next:** a browser run with `HEIMDALL_OFFLINE=1` on a bundle-imported state |
+| F23 Metadata vs downloaded vs used coverage | Complete | Coverage page and inventory banner state that indexed ≠ downloaded ≠ analysed; all-sky completeness is never claimed | Browser: coverage page text | — |
+| F24 Guided discovery | Complete (decision FD-3) | Six-step tour on real records; skippable, replayable, every step optional | Browser: skip closes; "Show me" opens NASA-02 | — |
+| F25 Interruptible data-driven demonstration | Partial | Tour plus real-epoch playback (interruptible, reduced motion) | — | No automatic cinematic sequence; the original specification was not recovered |
+| F26 Ranking/ML subordinate | Complete | Ranking is labelled "review priority, never a probability"; no ML or PCA surfaced | — | — |
+| F27 Review annotations | Deferred | — | — | Needs honest backend persistence; scope unconfirmed (an S3 historical proposal) |
+| F28 Reference overlays | Partial | Galactic equator and ecliptic (J2000), computed from frame definitions | Visible as a layer | **Dependency**: constellation lines need a licensed boundary dataset, which is not bundled |
+| F29 Accessibility | Partial | Keyboard for strip, ribbon, tabs, overlap chooser, omnibox combobox; focus restore; live region; reduced motion; tab roles; field errors beside inputs | Browser: keyboard steps; 390 px with no horizontal scroll | No screen-reader or contrast audit was run |
+| F30 Performance | Partial | rAF-coalesced drawing, de-duplicated GETs, cache of immutable records, generation guards, bounded caches, paused polling | Pan p50 16.7 ms / p95 16.8 ms after the half-resolution change (was p50 up to 33.3 ms / p95 up to 50.0 ms) | No 10⁴–10⁵-point stress test; tables are not virtualized |
+| F31 Origin and uncertainty honesty | Complete | Synthetic watermark on the map canvas, map banner, inspector and twin view; claim strength always shown | Browser: synthetic run watermark | — |
+| F32 Reproducible reports | Complete | Export checks the report's `investigation_id` against the viewed version before saving | Report routes covered by `tests/test_workbench.py` | A headless browser download is not file-verified |
+
+## Design decisions made in this run
+
+- **FD-1 Separate/Merge.**
+  - *Merge*: one wavelength-ordered axis of the 102 survey planes.
+  - *Separate*: six detector lanes of 17 channels each, illustrating that the detectors observe simultaneously through linear
+    variable filters.
+  - Measurement ticks sit at each measurement's calibrated wavelength in its own lane, never snapped to a survey plane.
+  - Captions state that the arrangement is illustrative and that merging is display ordering, not coaddition.
+- **FD-2 Known-object entry.** Library and tour checkpoints open saved results only. A new run is always an explicit action
+  (`Prepare a new run`), because a POST for a target without a frozen manifest queues archive preparation.
+- **FD-3 Guided tour.** Six steps over real records: all sky, NASA-02, strip and ribbon, quick answer, NASA-01 as a limited
+  result, and the twin view. It is offered once with a notice, never forced, and can be replayed from *Guide*.
+- **FD-4 Display vs analysis pixels in twin views.**
+  - Display images use every finite pixel.
+  - The engine's photometry exclusion mask (for example HALO, TRANSIENT, SUR_ERROR) is an optional overlay.
+  - The difference image uses the masked analysis arrays.
+- **FD-5 Transport adapter.** `GET /evidence/pair` is additive and read-only. It works only on exact checksum-verified local
+  products and never fetches anything. The comparability rule is the existing temporal tolerance
+  (`wavelength_tolerance_fraction` × bandwidth, same detector). A saved series' comparison record is attached when the
+  investigation is named.
+
+## Unresolved dependencies
+
+| Missing element | Kind | Effect for the user |
+|---|---|---|
+| General astronomical name resolver | External service | Search accepts registered targets, identifiers and coordinates only |
+| Constellation boundary or line dataset with licence | Data | No constellation overlay |
+| PSF-matched, source-registered difference products | Backend method | The difference view is an inspection aid with caveats, not a measurement |
+| Live end-to-end job run in the browser | External access (IRSA discovery outage) | Job reconnect is unit-verified, not live-verified |
+| Review-note persistence | Backend and scope decision | No annotations |
+| Large-dataset stress test and virtualized tables | Code and validation | Very large runs may render slowly |
+| Pre-existing: `tests` demo writes synthetic runs into the default `.heimdall/state` | Test isolation | Synthetic runs accumulate in the library; they are watermarked |
+
+## Commits
+
+Recorded after each push: see the section below.

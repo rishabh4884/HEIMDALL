@@ -5,9 +5,24 @@ export const deltaRA = (ra, center) => wrapRA(ra - center + 180) - 180;
 const clamp = (x, min, max) => Math.min(max, Math.max(min, x));
 const steps = [.00001, .00002, .00005, .0001, .0002, .0005, .001, .002, .005, .01, .02, .05, .1, .2, .5, 1, 2, 5, 10, 15, 30, 45, 60, 90];
 const color = { coverage: "#6d9fd0", detections: "#f2c879", sources: "#c2d8ec", candidates: "#efa8d9",
-  associations: "#91aac8", tracks: "#6ddcca", catalogue: "#a6b3d6", inventory: "#6ddcca", reference: "#9ee9dd" };
+  associations: "#91aac8", tracks: "#6ddcca", catalogue: "#a6b3d6", inventory: "#6ddcca", reference: "#9ee9dd", planes: "#c9a6ff", frames: "#ffffff" };
 const valid = (x) => typeof x === "number" && Number.isFinite(x);
 const RAD = Math.PI / 180;
+
+export function insidePolygon(x, y, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i], [xj, yj] = poly[j];
+    if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+export function area(poly) {
+  let a = 0;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) a += (poly[j][0] + poly[i][0]) * (poly[j][1] - poly[i][1]);
+  return Math.abs(a / 2);
+}
 
 export function atlasRadii(width, height) {
   const rx = Math.max(0, Math.min((width - 20) / 2, height - 20));
@@ -29,7 +44,7 @@ export function closeProjection(x, y, amount) {
 const inverseLensScale = (x, y, amount) => 2 / (1 + Math.sqrt(1 + 4 * amount * (x * x + y * y)));
 
 export class SkyMap {
-  constructor(canvas, onMove, onPick, tooltip, onImage, onPosition) {
+  constructor(canvas, onMove, onPick, tooltip, onImage, onPosition, onRegion = () => {}) {
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d");
     this.onMove = onMove;
@@ -37,6 +52,9 @@ export class SkyMap {
     this.tooltip = tooltip;
     this.view = { ra: 266.40499, dec: -28.93617, span: 360 };
     this.onPosition = onPosition;
+    this.onRegion = onRegion;
+    this.mode = "pan"; // "pan" | "box" | "lasso"
+    this.drag = null;
     this.survey = new SurveyImage(() => {
       this.requestDraw();
     });
@@ -111,6 +129,35 @@ export class SkyMap {
     this.setView(ra, dec, span);
   }
 
+  /** Every plotted, selectable point within `radius` px, for deterministic overlap handling. */
+  hitAll(x, y, radius = 7) {
+    return this.points.filter((p) => Math.hypot(x - p.x, y - p.y) <= radius).map((p) => p.item);
+  }
+
+  /** Points inside a screen polygon (box or lasso), using the even-odd rule. */
+  within(polygon) {
+    return this.points.filter((p) => insidePolygon(p.x, p.y, polygon)).map((p) => p.item);
+  }
+
+  /** On-screen unit vectors of local north and east at the view centre, measured from the actual projection. */
+  orientation(g = this.geometry()) {
+    const { ra, dec } = this.view;
+    const eps = Math.min(this.view.span / 200, .05);
+    const [x0, y0] = this.xy(ra, dec, g);
+    const [xn, yn] = this.xy(ra, Math.min(89.999, dec + eps), g);
+    const [xe, ye] = this.xy(ra + eps / Math.max(.01, Math.cos(dec * RAD)), dec, g);
+    const unitv = (dx, dy) => { const n = Math.hypot(dx, dy) || 1; return [dx / n, dy / n]; };
+    const north = unitv(xn - x0, yn - y0), east = unitv(xe - x0, ye - y0);
+    return { north, east, pxPerDeg: Math.hypot(xn - x0, yn - y0) / Math.max(1e-9, Math.min(89.999, dec + eps) - dec),
+      handedness: north[0] * east[1] - north[1] * east[0] < 0 ? "east-left-of-north" : "mirrored" };
+  }
+
+  setMode(mode) {
+    this.mode = mode;
+    this.drag = null;
+    this.requestDraw();
+  }
+
   hit(x, y) {
     let best;
     let distance = 11;
@@ -138,8 +185,9 @@ export class SkyMap {
     }, { passive: false });
     canvas.addEventListener("pointerdown", (event) => {
       if (event.button !== 0) return;
-      canvas.setPointerCapture(event.pointerId);
+      try { canvas.setPointerCapture(event.pointerId); } catch { /* pointer already released (e.g. a cancelled touch) */ }
       this.pointers.set(event.pointerId, this.pixel(event));
+      if (this.mode !== "pan" && this.pointers.size === 1) this.drag = { start: this.pixel(event), path: [this.pixel(event)] };
       this.moved = this.pointers.size > 1;
       this.tooltip.hidden = true;
     });
@@ -152,6 +200,15 @@ export class SkyMap {
         if (point) this.tooltip.textContent = point.item.label || point.item.id;
         return;
       }
+      if (this.drag && this.pointers.size === 1) {
+        const last = this.drag.path[this.drag.path.length - 1];
+        if (Math.hypot(next[0] - last[0], next[1] - last[1]) > 3) this.drag.path.push(next);
+        this.drag.end = next;
+        this.moved = true;
+        this.pointers.set(event.pointerId, next);
+        this.requestDraw();
+        return;
+      }
       const [dx, dy] = [next[0] - prev[0], next[1] - prev[1]];
       this.moved ||= Math.abs(dx) + Math.abs(dy) > 1;
       this.pointers.set(event.pointerId, next);
@@ -161,7 +218,7 @@ export class SkyMap {
         const before = Math.hypot(prev[0] - other[0], prev[1] - other[1]);
         const after = Math.hypot(next[0] - other[0], next[1] - other[1]);
         if (before > 2 && after > 2) this.zoom(before / after, (next[0] + other[0]) / 2, (next[1] + other[1]) / 2);
-      } else if (this.moved) {
+      } else if (this.moved && this.mode === "pan") {
         this.pan(dx, dy, g);
       }
     });
@@ -169,7 +226,19 @@ export class SkyMap {
       const pixel = this.pixel(event);
       const point = this.hit(...pixel);
       this.pointers.delete(event.pointerId);
-      if (!this.moved && point) this.onPick(point.item);
+      if (this.drag) {
+        const drag = this.drag;
+        this.drag = null;
+        this.requestDraw();
+        const polygon = this.mode === "box" && drag.end
+          ? [drag.start, [drag.end[0], drag.start[1]], drag.end, [drag.start[0], drag.end[1]]] : drag.path;
+        if (this.moved && polygon.length >= 3 && area(polygon) > 64) {
+          const sky = polygon.map(([x, y]) => this.world(x, y)).filter(Boolean);
+          this.onRegion(this.within(polygon), sky, this.mode);
+          return;
+        }
+      }
+      if (!this.moved && point) this.onPick(point.item, this.hitAll(...pixel));
       else if (!this.moved) {
         const coord = this.world(...pixel);
         if (coord && Math.abs(coord[1]) <= 90) this.onPosition?.(coord);
@@ -179,6 +248,9 @@ export class SkyMap {
       canvas.addEventListener(type, (event) => this.pointers.delete(event.pointerId));
     }
     canvas.addEventListener("pointerleave", () => { this.tooltip.hidden = true; });
+    canvas.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && this.drag) { this.drag = null; this.requestDraw(); }
+    });
     canvas.addEventListener("dblclick", (event) => this.zoom(.45, ...this.pixel(event)));
     canvas.addEventListener("keydown", (event) => {
       const g = this.geometry();
@@ -213,6 +285,34 @@ export class SkyMap {
     ctx.clip();
     this.drawPaths(g);
     this.drawPoints(g);
+    if (this.data.synthetic) this.watermark(g);
+    if (this.drag?.path?.length > 1) this.drawDrag();
+    ctx.restore();
+  }
+
+  watermark(g) {
+    const { ctx } = this;
+    ctx.save();
+    ctx.fillStyle = "rgba(255, 196, 120, 0.85)";
+    ctx.font = "700 13px ui-sans-serif, system-ui";
+    ctx.textAlign = "center";
+    ctx.fillText("SYNTHETIC · NOT REAL DATA", g.cx, g.top + 22);
+    ctx.restore();
+  }
+
+  drawDrag() {
+    const { ctx } = this;
+    const d = this.drag;
+    const poly = this.mode === "box" && d.end ? [d.start, [d.end[0], d.start[1]], d.end, [d.start[0], d.end[1]]] : d.path;
+    ctx.save();
+    ctx.setLineDash([5, 4]);
+    ctx.strokeStyle = "#ffffff";
+    ctx.fillStyle = "rgba(109, 220, 202, 0.12)";
+    ctx.beginPath();
+    poly.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
     ctx.restore();
   }
 
@@ -247,14 +347,16 @@ export class SkyMap {
   }
   drawPaths(g) {
     const { ctx } = this;
-    for (const key of ["inventory", "coverage", "associations", "tracks", "catalogue"]) {
+    for (const key of ["planes", "inventory", "coverage", "associations", "tracks", "catalogue"]) {
       if (!this.layers?.[key]) continue;
       for (const item of this.data[key] || []) {
         if (!item.coords?.length) continue;
         ctx.strokeStyle = color[key];
         ctx.fillStyle = color[key];
         ctx.lineWidth = key === "tracks" ? 1.5 : 1;
-        ctx.setLineDash(item.dashed || key === "catalogue" ? [4, 4] : []);
+        ctx.setLineDash(item.dashed || key === "catalogue" ? [4, 4] : key === "planes" ? [2, 6] : []);
+        ctx.lineWidth = item.selected ? 2.2 : ctx.lineWidth;
+        if (item.selected) ctx.strokeStyle = "#ffffff";
         this.drawAtlasPath(item, key, g);
       }
     }
@@ -301,8 +403,12 @@ export class SkyMap {
           if (key === "sources") ctx.stroke();
           else ctx.fill();
         }
-        if (selected) {
-          ctx.beginPath(); ctx.arc(x, y, radius + 5, 0, 2 * Math.PI); ctx.stroke();
+        if (selected || this.highlight?.has(item.id)) {
+          ctx.save();
+          ctx.lineWidth = selected ? 2 : 1.4;
+          ctx.strokeStyle = selected ? "#ffffff" : color[key];
+          ctx.beginPath(); ctx.arc(x, y, radius + (selected ? 6 : 4), 0, 2 * Math.PI); ctx.stroke();
+          ctx.restore();
         }
         if (item.ellipse && (selected || this.view.span < .004)) {
           this.ellipse(item, x, y, g);
