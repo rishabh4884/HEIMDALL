@@ -866,3 +866,45 @@ class QueueScaleTests(Base):
         per_wake = (_t.perf_counter() - t0) / 20
         self.assertEqual([j["job_id"] for j in due], [st["job"]["job_id"]])
         self.assertLess(per_wake, 0.05)  # SQL-filtered: finished jobs are not decoded on every wake
+
+
+class FieldRunHandlerTests(Base):
+    def test_field_job_waits_on_data_then_completes_and_is_reusable(self):
+        from heimdall.fieldruns import KIND_FIELD, _key, make_handler
+        s = self.svc()
+        child, _ = s.jobs.submit(KIND_INDEX, {"region": REGION.to_dict(), "scope": "current"})
+
+        class Cfg:
+            hash = "sha256:test"
+
+        class StubEngine:
+            config = Cfg()
+            ready = False
+            calls = 0
+
+            def data_service(self):
+                return s
+
+            def investigate(self, request):
+                self.calls += 1
+                if not self.ready:
+                    return {"readiness": "PREPARING", "job": {"job_id": child["job_id"]}, "message": "preparing"}, None
+                return {"run_id": "R20261115T090000-0123abcd", "input_manifest": {"manifest_id": "man:00aa"}, "status": {"execution": "COMPLETED"}}, self_tmp
+
+        self_tmp = self.tmp
+        eng = StubEngine()
+        s.handlers[KIND_FIELD] = make_handler(eng)
+        payload = {"ra_deg": 150.0, "dec_deg": 2.0, "radius_deg": 0.05, "detectors": [2], "mjd_start": None, "mjd_end": None,
+                   "max_observations": 4, "cutout_size_deg": 0.1, "context": "auto"}
+        job, _ = s.jobs.submit(KIND_FIELD, payload)
+        s.run_job(job["job_id"])
+        j = s.jobs.get(job["job_id"])
+        self.assertEqual((j["state"], j["progress"]["child_job"]), (JobState.PREPARING_DATA, child["job_id"]))
+        eng.ready = True
+        self.clock.advance(5)
+        s.run_job(job["job_id"])
+        j = s.jobs.get(job["job_id"])
+        self.assertEqual(j["state"], JobState.COMPLETE)
+        self.assertEqual(j["result"]["run_id"], "R20261115T090000-0123abcd")
+        row = s.db.one("SELECT investigation_id FROM investigation_results WHERE key=?", (_key(eng, payload, "man:00aa"),))
+        self.assertEqual(row["investigation_id"], "R20261115T090000-0123abcd")

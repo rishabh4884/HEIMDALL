@@ -194,8 +194,16 @@ class DataService:
         if step["state"] in (Readiness.NO_COVERAGE.value,):
             return self._status(Readiness.NO_COVERAGE, job=None, extra={"from_local_inventory": True})
         job, _ = self.jobs.submit(KIND_PREFETCH, {"region": region.to_dict(), "cutout_size_deg": cutout_size_deg, "max_observations": max_observations, "scope": self.cfg.scope},
-                                 revive_complete=True)  # reached only when the region is not fully local
+                                 revive_complete=True, internal=self._in_worker)  # reached only when the region is not fully local
         return self._wait_and_status(job, wait_s)
+
+    def prefetch_status(self, region: RegionSpec, *, cutout_size_deg: float | None, max_observations: int) -> dict:
+        """Whether a prefetch of this region is already fully local (and its frozen manifest), without creating any job."""
+        region.validate()
+        if self._would_create_jobs(region, cutout_size_deg, max_observations):
+            return {"local": False, "manifest_id": None}
+        step = self._prefetch_step(region, cutout_size_deg, max_observations)
+        return {"local": step["state"] == "READY", "manifest_id": step.get("manifest_id"), "state": step["state"]}
 
     def _would_create_jobs(self, region: RegionSpec, cutout_size_deg, max_observations) -> bool:
         """True when the region is not fully local, so the request must become a durable job (checked without creating child jobs)."""

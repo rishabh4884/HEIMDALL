@@ -124,6 +124,24 @@ class HardeningTests(ApiTests):
         self.assertEqual((e.status, e.code), (500, "RECORD_UNREADABLE"))
 
 
+class FieldRunApiTests(ApiTests):
+    def test_field_run_is_an_explicit_durable_job_and_inputs_are_bounded(self):
+        code, a = self.call("POST", "/api/v1/runs", body={"ra": 150.1, "dec": 2.2, "radius": 0.05, "detectors": [2], "max_observations": 4})
+        self.assertEqual(code, 202)
+        self.assertEqual(a["job"]["kind"], "FIELD_INVESTIGATION")
+        self.assertFalse(a["must_resubmit"])
+        self.assertIn("not a non-detection", a["note"])
+        _, b = self.call("POST", "/api/v1/runs", body={"ra": 150.1, "dec": 2.2, "radius": 0.05, "detectors": [2], "max_observations": 4})
+        self.assertEqual(a["job"]["job_id"], b["job"]["job_id"])
+        st = self.call("GET", f"/api/v1/jobs/{a['job']['job_id']}")[1]
+        self.assertEqual(st["readiness"], "PREPARING")
+        for bad in ({"ra": 1, "dec": 1, "radius": 3}, {"ra": 1, "dec": 1, "max_observations": 500}, {"ra": 1, "dec": 1, "x": 1}, {"dec": 1}):
+            self.assertEqual(self.err("POST", "/api/v1/runs", body=bad).status, 400, bad)
+        self.assertEqual(self.err("GET", "/api/v1/runs/../../etc").status, 404)
+        self.assertEqual(self.err("GET", "/api/v1/runs/R20990101T000000-deadbeef").status, 404)
+        self.assertEqual(self.err("GET", "/api/v1/runs/notarun").status, 400)
+
+
 class SocketTests(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())

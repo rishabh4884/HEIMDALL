@@ -41,6 +41,11 @@ Everything below was observed on the real archive through the service. None of i
   - `PARTIAL`, because Gaia context was `OFFLINE_NOT_CACHED` (recorded, not skipped).
 
   These are blind-pipeline outputs, not validated detections. The Planet X region status is `NOT_ASSESSABLE`.
+- **The same field run over the HTTP API as a durable job** (`http_field_run.txt`):
+  - `POST /api/v1/runs` was acknowledged with 202 in 2.8 ms as `job:field_investigation:bfb55b20a284`.
+  - Worker 5 completed it from manifest `man:d32d96d3e47d157d` as run `R20261115T085933-1cb9d31a`.
+  - Resubmitting returned the stored run with 200 in 10.5 ms (`reused: true`).
+  - Its `results_hash` (`sha256:511dc7e3...`) is identical to the CLI run's, from a separate process on the same frozen inputs.
 - **Last real measurement through the service.** NASA-01 at about 06:20 today: `tinv:NASA-01:fd9680e5`, manifest
   `man:e8ea091b52f6041c`, 10 products, 7 measured, `LIMITED_BY_DATA` because every measured image is saturation-flagged. It is
   described in the next section.

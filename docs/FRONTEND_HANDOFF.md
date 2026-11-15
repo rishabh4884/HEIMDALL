@@ -31,6 +31,8 @@ is given. Implementation: `heimdall/server.py` (stdlib only); tests: `tests/test
 | `GET /investigations/{tinv:...}` | one immutable saved version | older versions stay readable |
 | `GET /coverage?ra&dec&radius[&detectors][&offset&limit]` | `heimdall.data_status/1.0` + `observations[]` with footprints from the local index | never runs an analysis; the cone is snapped to a 0.01° grid (`queried_cone`, always containing the requested cone); unindexed -> `PREPARING` + job, `observations: null` |
 | `POST /investigations` | body `{"target_id":"NASA-01"}` or `{"ra":..,"dec":..,"category":"MOVING_OBJECT"|"VARIABLE_STAR"}`, optional `options` (`max_observations` 1–64, `detectors`, `mjd_start`, `mjd_end`, `cutout_size_deg` 0.01–0.5, `blind_pipeline`, `context`) | **200** completed result (a stored identical result) or **202** data status with `job.job_id` |
+| `POST /runs` | explicit blind **field** run: `{"ra","dec","radius"<=0.5,"detectors","max_observations"<=32,"cutout_size_deg"}` -> **200** stored identical run (`run_id`, `summary`, `reused`) or **202** `FIELD_INVESTIGATION` job | only on an explicit user Run; browsing uses `GET /coverage` |
+| `GET /runs/{run_id}` | the saved blind-pipeline run (`investigation.json`: detections, sources, candidates, investigations, `input_manifest`) | schema `docs/OUTPUT_SCHEMA.md`; `GET /jobs/{id}` of a field job includes `run` summary when complete |
 | `GET /jobs/{job_id}` | target jobs: status (+`events[]`) while preparing; the full result once complete | reconnect at any time; never resubmit |
 | `GET /jobs?state=&kind=&limit=` | job list | |
 | `POST /jobs/{job_id}/cancel` | status after cancellation | |
@@ -69,6 +71,5 @@ Vocabulary rules: `NOT_ASSESSABLE`/`LIMITED_BY_DATA` are not "nothing found"; a 
 
 * Polling only (no WebSocket/SSE). Progress granularity is per job state/event, not percent.
 * `GET /coverage` returns only regions already indexed; a new region queues an INDEX job (returns `PREPARING`).
-* Blind field runs are not exposed over HTTP yet. On the CLI/Python they are readiness-first (prefetch -> frozen manifest -> local run, or a
-  durable job); `--live` is an operator diagnostic.
+* Blind field runs are durable jobs (`POST /runs`); the HTTP request never computes or contacts the archive.
 * Single-node SQLite state; one worker per state directory.

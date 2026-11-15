@@ -171,6 +171,22 @@ Live observations (UTC, evidence `.heimdall/verification/2026-11-15-submission/`
   (details in `docs/VERIFICATION_REAL_DATA.md`).
 - Tests: full suite 509 OK (5 live skipped); new `test_blind_investigation_is_readiness_first`.
 
+### M11 — blind field runs as durable jobs over HTTP
+
+- New files and changes:
+  - `heimdall/fieldruns.py`: the `FIELD_INVESTIGATION` job kind, the worker handler and `request_field_run`, which reuses a stored run
+    keyed by request, config and manifest;
+  - `DataService.prefetch_status`: a readiness check with no side effects;
+  - prefetch submissions made from a worker are marked internal;
+  - `POST /api/v1/runs` and `GET /api/v1/runs/{run_id}`.
+- Real check:
+  - submit acknowledged in 2.8 ms (202);
+  - the worker completed it from `man:d32d96d3e47d157d`;
+  - resubmission reused the stored run (200, 10.5 ms);
+  - the `results_hash` is identical to the earlier CLI run.
+- Worker 5 (pid 97013) runs this code.
+- Tests: full suite 516 OK (5 live skipped); new `FieldRunApiTests` and `FieldRunHandlerTests`.
+
 ## Integration plan (D-007, revised; pending, not executed)
 
 No squash. No rewrite, force-push or merge until the owner explicitly approves the verified plan.
@@ -203,8 +219,8 @@ All-sky metadata crawl and mirror (spec §8–9), new ML models (§16), per-dete
 
 ## Active jobs / workers
 
-- Worker pid 94815 (`python3 -m heimdall data worker --max-idle 10`), started 08:34Z on the reviewed code. Stop it gracefully with
-  `kill -TERM 94815`. Open jobs survive a stop and continue when any worker starts.
+- Worker pid 97013 (`python3 -m heimdall data worker --max-idle 5`), started 08:59Z on the M11 code. Stop it gracefully with
+  `kill -TERM 97013`. Open jobs survive a stop and continue when any worker starts.
 - Open job `job:target_investigation:c03487f9482a` (coordinate RA 150.1, Dec 2.2) is `PREPARING_DATA` / `CATALOGUE_PENDING`: Gaia is
   unreachable at IRSA and ESA. Its deadline is 13:53:30Z; after that it is re-checked every 6 h for 7 days.
 - Inspect read-only with `python3 -m heimdall data jobs` and `python3 -m heimdall data status`.

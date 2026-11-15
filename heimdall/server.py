@@ -17,6 +17,9 @@ Endpoints (prefix ``/api/v1``):
   GET  /coverage?ra&dec&radius[&detectors][&offset][&limit]   observations from the local index, or an INDEX job
   POST /investigations                 {"target_id": "NASA-01"} or {"ra":..,"dec":..,"category":..}, optional "options"
                                        -> 200 completed result, or 202 data_status with a job id (reconnect with GET /jobs/{id})
+  POST /runs                           explicit blind field run {"ra","dec","radius"<=0.5,"detectors","max_observations"<=32,"cutout_size_deg"}
+                                       -> 200 stored identical run, or 202 durable FIELD_INVESTIGATION job
+  GET  /runs/{run_id}                  a saved blind-pipeline run (heimdall investigation.json)
   GET  /jobs[?state=&kind=&limit=]     job list
   GET  /jobs/{job_id}                  job status (target jobs: the investigation status or completed result)
   POST /jobs/{job_id}/cancel
@@ -48,6 +51,7 @@ RE_TARGET = re.compile(r"^(NASA-0[1-9]|COORD-[0-9.]+[+-][0-9.]+)$")
 RE_INV = re.compile(r"^tinv:(NASA-0[1-9]|COORD-[0-9.]+[+-][0-9.]+):([0-9a-f]{8})$")
 RE_JOB = re.compile(r"^job:[a-z_]{1,40}:[0-9a-f]{12}$")
 RE_MAN = re.compile(r"^man:[0-9a-f]{8,64}$")
+RE_RUN = re.compile(r"^R\d{8}T\d{6}-[0-9a-f]{8}$")
 CATEGORIES = {"MOVING_OBJECT", "VARIABLE_STAR"}
 OPTION_TYPES = {"max_observations": int, "detectors": list, "mjd_start": float, "mjd_end": float, "cutout_size_deg": float,
                 "blind_pipeline": bool, "context": bool}
@@ -176,6 +180,15 @@ class Api:
             return 200, doc
         if route == ("POST", "investigations") and len(p) == 1:
             return self.submit(body or {})
+        if route == ("POST", "runs") and len(p) == 1:
+            return self.submit_run(body or {})
+        if route == ("GET", "runs") and len(p) == 2:
+            if not RE_RUN.match(p[1]):
+                raise ApiError(400, "INPUT_INVALID", "run id must look like R<yyyymmdd>T<hhmmss>-<8 hex>")
+            try:
+                return 200, self.engine.load(p[1])
+            except Exception:  # noqa: BLE001 - unknown or unreadable run directory
+                raise ApiError(404, "NOT_FOUND", f"no saved run {p[1]}") from None
         if route == ("GET", "coverage") and len(p) == 1:
             return 200, self.coverage(query)
         if route == ("GET", "jobs"):
@@ -252,6 +265,25 @@ class Api:
             v["superseded_by"] = superseded.get(v["investigation_id"])
         return {"target_id": tid, "latest_usable": latest, "latest_attempt": attempt, "versions": out[:200]}
 
+    def submit_run(self, body: dict) -> tuple[int, dict]:
+        """Explicit blind field run (never started by browsing). 200 = stored identical run; 202 = durable job."""
+        from .fieldruns import request_field_run
+        from .pipeline.runner import InvestigationRequest
+        if not isinstance(body, dict):
+            raise ApiError(400, "INPUT_INVALID", "body must be a JSON object")
+        allowed = {"ra", "dec", "radius", "detectors", "max_observations", "cutout_size_deg", "mjd_start", "mjd_end"}
+        unknown = set(body) - allowed
+        if unknown:
+            raise ApiError(400, "INPUT_INVALID", f"unknown fields {sorted(unknown)}")
+        q = {k: [str(v)] for k, v in body.items() if v is not None and k in ("ra", "dec", "radius", "max_observations", "cutout_size_deg", "mjd_start", "mjd_end")}
+        req = InvestigationRequest(ra_deg=_ra(_num(q, "ra", -360.0, 720.0)), dec_deg=_num(q, "dec", -90.0, 90.0), radius_deg=_num(q, "radius", 0.005, 0.5, 0.05),
+                                   source_id="irsa-spherex", detectors=list(_detectors(body.get("detectors")) or []) or None,
+                                   max_observations=int(_num(q, "max_observations", 1, 32, 8)), cutout_size_deg=_num(q, "cutout_size_deg", 0.01, 0.5, 0.1),
+                                   mjd_start=_num(q, "mjd_start", 50000, 80000) if "mjd_start" in q else None,
+                                   mjd_end=_num(q, "mjd_end", 50000, 80000) if "mjd_end" in q else None)
+        out = request_field_run(self.engine, req)
+        return (200 if out.get("run_id") else 202), out
+
     def coverage(self, query: dict) -> dict:
         from .dataservice.schemas import RegionSpec
         ra, dec, radius = _snap_cone(_ra(_num(query, "ra", -360.0, 720.0)), _num(query, "dec", -90.0, 90.0), _num(query, "radius", 1e-4, 1.0, 0.05))
@@ -276,8 +308,13 @@ class Api:
         job = self.svc.jobs.get(jid)
         if job is None:
             raise ApiError(404, "NOT_FOUND", f"no job {jid}")
+        from .fieldruns import KIND_FIELD, field_status
         from .targets.prepare import KIND_TARGET, investigation_status
-        return investigation_status(self.svc, jid) if job["kind"] == KIND_TARGET else self.svc.job_status(jid)
+        if job["kind"] == KIND_TARGET:
+            return investigation_status(self.svc, jid)
+        if job["kind"] == KIND_FIELD:
+            return field_status(self.engine, jid)
+        return self.svc.job_status(jid)
 
     # -- helpers ---------------------------------------------------------------------------------------------
     @staticmethod

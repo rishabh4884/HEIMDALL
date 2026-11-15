@@ -259,6 +259,8 @@ class Engine:
             source = None if self.settings.offline else self.source(source_id)
             self._ds = DataService(Path(self.settings.state_dir) / "dataservice", source, ServiceConfig.from_env(), offline=self.settings.offline)
             self._ds.handlers[prepare.KIND_TARGET] = prepare.make_handler(settings=self.settings, config=self.config, registry=self.validation, store=self.store)
+            from . import fieldruns
+            self._ds.handlers[fieldruns.KIND_FIELD] = fieldruns.make_handler(self)
         return self._ds
 
     def investigation_status(self, job_id: str) -> dict:
