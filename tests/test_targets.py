@@ -320,6 +320,13 @@ class VariabilityTests(unittest.TestCase):
         out = analyse_variability(series_measurements([2000, 2200, 1850, 2150, 1900], n_controls=14, control_scatter=0.2), self.cfg)
         self.assertIn(out["verdict"], ("NO_SIGNIFICANT_VARIABILITY", "SIGNIFICANT_BUT_NOT_DISTINGUISHABLE_FROM_FIELD_SYSTEMATICS"))
 
+    def test_without_a_control_reference_formal_significance_is_not_a_detection(self):
+        # Regression (D-006): with fewer than 5 completed control series no false-alarm fraction exists; that absent test must not count as passed.
+        out = analyse_variability(series_measurements([2000, 3500, 2000, 3600, 2100], n_controls=2), self.cfg)
+        self.assertEqual(out["verdict"], "SIGNIFICANT_BUT_NOT_DISTINGUISHABLE_FROM_FIELD_SYSTEMATICS")
+        self.assertIn("could not be computed", out["verdict_reason"])
+        self.assertEqual(out["method_version"], "1.1.0-provisional")
+
     def test_saturated_images_are_excluded_and_reported_as_a_caveat(self):
         out = analyse_variability(series_measurements([2000, 3500, 2000, 3600, 2100], n_controls=12, saturated=(0, 1)), self.cfg)
         self.assertTrue(any("saturation" in c for c in out["caveats"]))
@@ -485,10 +492,15 @@ class IntegratedTargetTests(unittest.TestCase):
             self.assertEqual(p["origin"], "SYNTHETIC_TEST_FIXTURE")
             self.assertTrue(p["sha256"])
 
-    def test_the_injected_variable_is_found_to_vary_with_stated_caveats(self):
+    def test_the_injected_variable_is_recovered_but_not_claimed_without_a_control_reference(self):
+        # Offline: no Gaia controls, so neither the field error scale nor the empirical false-alarm fraction exists. The injected signal is
+        # recovered at high formal significance, but (D-006) that alone is not a detection: field systematics cannot be excluded.
         v = self.result["analyses"]["variability"]
-        self.assertIn(v["verdict"], ("VARIABILITY_DETECTED", "VARIABILITY_DETECTED_WITH_CAVEATS"))
-        self.assertTrue(v["caveats"])  # offline: no Gaia controls, so the field error scale is not estimated
+        best = max(s["test"]["sigma_equivalent"] or 0 for s in v["series"] if s["test"]["status"] == "COMPLETED")
+        self.assertGreater(best, 5.0)
+        self.assertEqual(v["verdict"], "SIGNIFICANT_BUT_NOT_DISTINGUISHABLE_FROM_FIELD_SYSTEMATICS")
+        self.assertIn("could not be computed", v["verdict_reason"])
+        self.assertTrue(v["caveats"])
         self.assertEqual(v["period_assessment"]["status"], "NOT_ASSESSABLE")
 
     def test_reference_is_coordinate_only_and_never_pretends_to_be_catalogued(self):
@@ -635,3 +647,64 @@ class UnresolvedTargetTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReevaluationTests(unittest.TestCase):
+    """Decision-rule correction on saved measurements: a new linked version, the old one untouched (SYNTHETIC measurements)."""
+
+    def setUp(self):
+        from heimdall.pipeline.results import canonical_hash
+        self.tmp = Path(tempfile.mkdtemp())
+        self.cfg = EngineConfig()
+        ms = series_measurements([2000, 3500, 2000, 3600, 2100], n_controls=2)
+        var = analyse_variability(ms, self.cfg)
+        # emulate a record saved by method 1.0.0, which counted an absent control comparison as passed
+        var.update(verdict="VARIABILITY_DETECTED_WITH_CAVEATS", verdict_reason="a series survives the control comparison but caveats remain",
+                   method_version="1.0.0-provisional")
+        self.doc = {"investigation_id": "tinv:NASA-02:0000aaaa", "created_at": "2026-11-14T10:00:00+00:00", "config_hash": self.cfg.hash,
+                    "target": {"target_id": "NASA-02", "category": "MOVING_OBJECT"}, "options": {}, "measurements": ms, "warnings": [],
+                    "analyses": {"variability": var, "motion": {"verdict": "MOTION_DETECTED_CONSISTENT_WITH_CATALOGUE"}},
+                    "hypotheses": [{"slug": "catalogue_motion", "status": "SUPPORTED"}], "conclusion": {"quick_answer": "moved"}, "reference": {}, "coverage": {}}
+        self.doc["results_hash"] = canonical_hash(self.doc)
+        self.d = self.tmp / "targets" / "NASA-02"
+        self.d.mkdir(parents=True)
+        self.old_text = json.dumps(self.doc, indent=1, sort_keys=True)
+        (self.d / "0000aaaa.json").write_text(self.old_text)
+        (self.d / "latest.json").write_text(self.old_text)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_reevaluation_creates_a_linked_version_and_keeps_the_old_one(self):
+        from heimdall.targets.reevaluate import reevaluate_variability
+        self.assertTrue(reevaluate_variability(self.tmp, self.cfg, "NASA-02", reason="test", dry_run=True)["dry_run"])
+        self.assertEqual((self.d / "latest.json").read_text(), self.old_text)  # dry run writes nothing
+        out = reevaluate_variability(self.tmp, self.cfg, "NASA-02", reason="absent control comparison was counted as passed")
+        self.assertTrue(out["changed"])
+        self.assertEqual(out["verdict_change"]["to"], "SIGNIFICANT_BUT_NOT_DISTINGUISHABLE_FROM_FIELD_SYSTEMATICS")
+        self.assertEqual((self.d / "0000aaaa.json").read_text(), self.old_text)  # history untouched
+        new = json.loads((self.d / "latest.json").read_text())
+        self.assertNotEqual(new["investigation_id"], self.doc["investigation_id"])
+        self.assertEqual(new["supersedes"]["investigation_id"], self.doc["investigation_id"])
+        self.assertFalse(new["supersedes"]["new_data_used"])
+        self.assertEqual(new["measurements"], self.doc["measurements"])
+        self.assertEqual(new["hypotheses"], self.doc["hypotheses"])
+        self.assertEqual(new["analyses"]["motion"], self.doc["analyses"]["motion"])
+        self.assertTrue((self.d / f"{new['investigation_id'].split(':')[-1]}.json").is_file())
+        self.assertEqual(len((self.d / "supersessions.jsonl").read_text().splitlines()), 1)
+        again = reevaluate_variability(self.tmp, self.cfg, "NASA-02", reason="again")
+        self.assertFalse(again["changed"])  # idempotent
+
+    def test_changed_inputs_or_configuration_refuse_reevaluation(self):
+        from heimdall.contracts import HeimdallError
+        from heimdall.targets.reevaluate import reevaluate_variability
+        bad = json.loads(self.old_text)
+        bad["measurements"][0]["forced"]["flux_ujy"] *= 3  # statistics no longer reproduce
+        (self.d / "latest.json").write_text(json.dumps(bad))
+        with self.assertRaises(HeimdallError):
+            reevaluate_variability(self.tmp, self.cfg, "NASA-02", reason="x")
+        bad = json.loads(self.old_text)
+        bad["config_hash"] = "sha256:other"
+        (self.d / "latest.json").write_text(json.dumps(bad))
+        with self.assertRaises(HeimdallError):
+            reevaluate_variability(self.tmp, self.cfg, "NASA-02", reason="x")

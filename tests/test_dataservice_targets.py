@@ -120,7 +120,9 @@ class SyntheticTargetFlowTests(unittest.TestCase):
         self.assertEqual(r["data_status"]["readiness"], "READY")
         self.assertEqual(self.svc.store.usage()["pinned_objects"], self.svc.store.usage()["objects"])
         v = r["analyses"]["variability"]
-        self.assertIn(v["verdict"], ("VARIABILITY_DETECTED", "VARIABILITY_DETECTED_WITH_CAVEATS"))
+        # context=False -> no control stars: the injected signal is formally significant but, without a control reference, not claimed (D-006)
+        self.assertEqual(v["verdict"], "SIGNIFICANT_BUT_NOT_DISTINGUISHABLE_FROM_FIELD_SYSTEMATICS")
+        self.assertGreater(max(x["test"]["sigma_equivalent"] or 0 for x in v["series"] if x["test"]["status"] == "COMPLETED"), 5.0)
         json.dumps(r, allow_nan=False)
 
     def test_3_an_identical_request_is_served_with_zero_archive_calls_by_a_new_process(self):

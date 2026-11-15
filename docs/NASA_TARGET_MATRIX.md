@@ -20,14 +20,15 @@ Generated from saved results by `python3 -m heimdall target matrix`. Every state
 
 ## NASA-02 Epsilon Indi B (Ba/Bb brown-dwarf binary) (MOVING_OBJECT)
 
-- Investigation: `tinv:NASA-02:c3c6c224`; execution **COMPLETED**, test **PASSED** (analysis completed with a reported verdict; the verdict itself may be a non-detection)
+- Supersedes `tinv:NASA-02:c3c6c224` (re-evaluated from the same saved measurements, no new data; changed: analyses.variability; VARIABILITY_DETECTED_WITH_CAVEATS -> SIGNIFICANT_BUT_NOT_DISTINGUISHABLE_FROM_FIELD_SYSTEMATICS). Reason: variability decision-rule correction (D-006): the absent control-star comparison (2 completed control series, minimum 5) was counted as passed
+- Investigation: `tinv:NASA-02:0c714738`; execution **COMPLETED**, test **PASSED** (analysis completed with a reported verdict; the verdict itself may be a non-detection)
 - Identification: Gaia DR3 6412596012146801152 (Gaia DR3), status RESOLVED
 - Position at reference epoch 2016.0: RA 331.076453 Dec -56.793812; PM (3982.0, -2466.8) mas/yr [Gaia DR3 catalogue]
 - SPHEREx observations found 177, selected 16, measured 16; MJD 60789.9-61315.5; epochs 10; releases {'spherex_dr1': 129, 'spherex_qr3': 48}; detectors {'2': 93, '5': 84}
 - Products retrieved: 16 (origins ['LIVE']); wavelengths measured (um): [1.107, 1.11, 1.135, 1.161, 1.47, 1.562, 1.576, 3.829, 3.862, 3.865, 3.897, 3.931, 4.248, 4.32, 4.341]
 - Quality flags in footprints: {'HALO': 1, 'SOURCE': 16, 'TRANSIENT': 1}
 - Motion: **MOTION_DETECTED_CONSISTENT_WITH_CATALOGUE**; usable 15/16, baseline 521.3 d; fitted v 4.533364551442398 vs catalogue 4.612582776628829 arcsec/yr; control null: COMPLETED 
-- Variability: **VARIABILITY_DETECTED_WITH_CAVEATS** (a series survives the control comparison but caveats remain); 15 usable points, 10 epochs, 12 comparable series; period: SAMPLING_ADEQUATE_FOR_SEARCH_ONLY; caveats: ['1 of 16 measured images have saturation/non-linearity flags in the PSF footprint (excluded from tests)', 'field error scale not estimated (2 comparable series with dof >= 2 (minimum 10)); formal flux errors used']
+- Variability: **SIGNIFICANT_BUT_NOT_DISTINGUISHABLE_FROM_FIELD_SYSTEMATICS** (formal significance only: fewer than 5 completed control series (2), so the control-star false-alarm reference could not be computed and field systematics cannot be excluded); 15 usable points, 10 epochs, 12 comparable series; period: SAMPLING_ADEQUATE_FOR_SEARCH_ONLY; caveats: ['1 of 16 measured images have saturation/non-linearity flags in the PSF footprint (excluded from tests)', 'field error scale not estimated (2 comparable series with dof >= 2 (minimum 10)); formal flux errors used']
 - Blind pipeline: FAILED run `None`; detections near expected target None/None
 - Detectability: {'max': 193.81238645548117, 'median': 104.08317168932494, 'n_ge_3': 16, 'n_ge_5': 16}
 - Hypotheses: Known source moving as its catalogue astrometry predicts [SUPPORTED]; Stationary source (no genuine motion) [DISFAVOURED]; Apparent motion produced by registration/astrometric error [CANNOT_EXCLUDE]; Centroid dominated by a blended neighbour or unresolved companion [CANNOT_EXCLUDE]; Possibly moving uncatalogued source [DISFAVOURED]

@@ -97,7 +97,7 @@ A blocked attempt no longer replaces a completed result as `latest`.
 | Target | Status | Observations found / measured | What it can and cannot say |
 |---|---|---|---|
 | NASA-01 Barnard's Star | COMPLETED / LIMITED_BY_DATA | 120 / 9 | all measured images have saturation flags; no valid motion test. Blind pipeline had failed in that run (since fixed; not rerun on this target). |
-| NASA-02 Epsilon Indi B | COMPLETED / PASSED | 177 / 16 | motion consistent with catalogue (fitted 4.533 vs 4.613 arcsec/yr, 15 of 16 points, 521 d); variability with caveats. Provisional; registration artefact and blended companion not excluded. |
+| NASA-02 Epsilon Indi B | COMPLETED / PASSED | 177 / 16 | motion consistent with catalogue (fitted 4.533 vs 4.613 arcsec/yr, 15 of 16 points, 521 d); variability with caveats (**superseded 2026-11-15**: re-evaluated from the same measurements as `SIGNIFICANT_BUT_NOT_DISTINGUISHABLE_FROM_FIELD_SYSTEMATICS`, `tinv:NASA-02:0c714738`, decision D-006). Provisional; registration artefact and blended companion not excluded. |
 | NASA-03 WISE 0855 | PARTIAL / LIMITED_BY_DATA | 93 / 9 | too faint per image for centroids; no motion or variability test. |
 | NASA-04 RW Aur | COMPLETED / LIMITED_BY_DATA | 111 / 12 | no comparable series with enough points; saturation flags. |
 | NASA-05 R Dra | COMPLETED / LIMITED_BY_DATA | 189 / 10 | all 10 measured images saturation-flagged; no valid variability test; blind pipeline PARTIAL, 0 of 10 blind detections near the expected position (not a non-detection of the star, which is saturated). |

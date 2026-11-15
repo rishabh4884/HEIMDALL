@@ -133,7 +133,7 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--no-svg", action="store_true")
     s.add_argument("--quiet", action="store_true")
     s = sub.add_parser("target", help="named (NASA-01..05) or coordinate-addressable target investigations")
-    s.add_argument("action", choices=["list", "resolve", "run", "show", "matrix"])
+    s.add_argument("action", choices=["list", "resolve", "run", "show", "matrix", "reevaluate"])
     s.add_argument("target", nargs="?", help="NASA-01..NASA-05 or a name fragment")
     s.add_argument("--ra", type=float)
     s.add_argument("--dec", type=float)
@@ -151,6 +151,8 @@ def _parser() -> argparse.ArgumentParser:
                    "status are returned (the request keeps being worked on; do not resubmit)")
     s.add_argument("--no-context", action="store_true")
     s.add_argument("--write", type=Path, help="matrix: write markdown here")
+    s.add_argument("--reason", help="reevaluate: why the saved verdict is re-evaluated (recorded in the new version)")
+    s.add_argument("--dry-run", action="store_true", help="reevaluate: report the change without writing")
     s.add_argument("--json", action="store_true")
     s.add_argument("--quiet", action="store_true")
     s = sub.add_parser("data", help="SPHEREx data service: inventory, jobs, worker, prefetch, sync, freshness, retention")
@@ -404,6 +406,13 @@ def _target(engine, args) -> int:
         return 0
     if args.action == "show":
         _print(engine.target_result(args.target), True)
+        return 0
+    if args.action == "reevaluate":  # decision-rule correction on saved measurements; creates a linked new version, never edits the old one
+        from .targets.reevaluate import reevaluate_variability
+        if not args.target or not args.reason:
+            print("error: reevaluate needs a target id and --reason", file=sys.stderr)
+            return 2
+        _print(reevaluate_variability(Path(engine.settings.state_dir), engine.config, args.target, reason=args.reason, dry_run=args.dry_run), True)
         return 0
     if args.action == "resolve":
         _print(engine.resolve_target(args.target, ra=args.ra, dec=args.dec, category=args.category), True)

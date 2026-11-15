@@ -22,6 +22,11 @@ def build_matrix(engine) -> str:
         ref, cov, st = r["reference"], r.get("coverage", {}), r["status"]
         reason = st.get("reason") or "no reason recorded"
         reference_reason = f"; {ref['reason']}" if ref.get("reason") else ""
+        sup = r.get("supersedes")
+        if sup:
+            vc = sup.get("verdict_change") or {}
+            lines += [f"- Supersedes `{sup['investigation_id']}` (re-evaluated from the same saved measurements, no new data; changed: "
+                      f"{', '.join(sup.get('changed_sections', []))}; {vc.get('from')} -> {vc.get('to')}). Reason: {sup.get('reason')}"]
         lines += [f"- Investigation: `{r['investigation_id']}`; execution **{st['execution']}**, test **{st['test_status']}** ({reason})",
                   f"- Identification: {ref.get('source_id')} ({ref.get('catalogue')}), status {ref['status']}{reference_reason}",
                   f"- Position at reference epoch {_fmt(ref.get('epoch_jyear'), 1)}: RA {_fmt(ref.get('ra_deg'), 6)} Dec {_fmt(ref.get('dec_deg'), 6)}; "

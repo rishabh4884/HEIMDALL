@@ -35,6 +35,8 @@ FALSE_ALARM_LIMIT = 0.05
 MIN_EPOCHS_FOR_TREND = 3
 MIN_EPOCHS_FOR_PERIOD = 6  # and a baseline of at least two cycles of any candidate period
 CONTAMINATION_RATIO_LIMIT = 0.1
+MIN_CONTROL_SERIES = 5  # completed control series needed before an empirical false-alarm fraction is computed
+METHOD_VERSION = "1.1.0-provisional"
 
 
 def _point(m: dict, epoch_of: dict[str, int], gaia: str | None = None) -> tuple[SeriesPoint | None, dict | None]:
@@ -148,7 +150,7 @@ def analyse_variability(measurements: list[dict], cfg: EngineConfig, *, extra_ca
         r = variability_test(s, cfg.temporal)
         results.append(r)
         d = _series_summary(s, r, scale)
-        if r.status == "COMPLETED" and r.dof and len(ctl_ratio) >= 5:
+        if r.status == "COMPLETED" and r.dof and len(ctl_ratio) >= MIN_CONTROL_SERIES:
             d["test"]["empirical_false_alarm_fraction"] = float(np.mean(ctl_ratio >= r.chi2 / r.dof))
             d["test"]["n_control_series"] = int(len(ctl_ratio))
         d["trend"] = _trend(s, scale)
@@ -182,19 +184,26 @@ def analyse_variability(measurements: list[dict], cfg: EngineConfig, *, extra_ca
     if err["status"] != "COMPLETED":
         caveats.append(f"field error scale not estimated ({err.get('reason')}); formal flux errors used")
     sig = [d["test"]["sigma_equivalent"] for d in completed if d["test"].get("sigma_equivalent") is not None]
+    # A series survives only a control comparison that was actually made: with fewer than MIN_CONTROL_SERIES completed control series the
+    # empirical false-alarm fraction is not computed, and an absent test is never counted as a passed one (fixed in 1.1.0; see DECISIONS D-006).
     survive = [d for d in completed if (d["test"].get("sigma_equivalent") or 0) >= DETECT_SIGMA
-               and (d["test"].get("empirical_false_alarm_fraction") is None or d["test"]["empirical_false_alarm_fraction"] <= FALSE_ALARM_LIMIT)]
+               and d["test"].get("empirical_false_alarm_fraction") is not None and d["test"]["empirical_false_alarm_fraction"] <= FALSE_ALARM_LIMIT]
+    no_reference = [d for d in completed if (d["test"].get("sigma_equivalent") or 0) >= DETECT_SIGMA and d["test"].get("empirical_false_alarm_fraction") is None]
     if not completed:
         verdict, why = "NOT_ASSESSABLE", "no comparable series has at least the minimum points and epochs"
     elif survive and not caveats:
         verdict, why = "VARIABILITY_DETECTED", "a series exceeds the significance threshold and the control false-alarm limit"
     elif survive:
         verdict, why = "VARIABILITY_DETECTED_WITH_CAVEATS", "a series survives the control comparison but caveats remain"
+    elif no_reference:
+        verdict, why = ("SIGNIFICANT_BUT_NOT_DISTINGUISHABLE_FROM_FIELD_SYSTEMATICS",
+                        f"formal significance only: fewer than {MIN_CONTROL_SERIES} completed control series ({int(len(ctl_ratio))}), so the control-star "
+                        "false-alarm reference could not be computed and field systematics cannot be excluded")
     elif sig and max(sig) >= DETECT_SIGMA:
         verdict, why = "SIGNIFICANT_BUT_NOT_DISTINGUISHABLE_FROM_FIELD_SYSTEMATICS", "formal significance is not supported by the control-star reference"
     else:
         verdict, why = "NO_SIGNIFICANT_VARIABILITY", "no completed series exceeds the significance threshold"
-    return {"method_id": "target_variability", "method_version": "1.0.0-provisional", "status": "COMPLETED" if completed else "INSUFFICIENT_INPUTS",
+    return {"method_id": "target_variability", "method_version": METHOD_VERSION, "status": "COMPLETED" if completed else "INSUFFICIENT_INPUTS",
             "verdict": verdict, "verdict_reason": why, "thresholds": {"detect_sigma": DETECT_SIGMA, "false_alarm_limit": FALSE_ALARM_LIMIT, "min_snr": MIN_SNR},
             "n_images": len(measurements), "n_measured": len(meas), "n_points_usable": sum(p.usable for p in pts), "n_upper_limits": len(limits),
             "n_epochs": len(epochs), "epochs": [{"index": e.index, "mjd_start": e.mjd_start, "mjd_end": e.mjd_end, "n": e.n_observations} for e in epochs],
