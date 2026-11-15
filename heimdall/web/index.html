@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f4f7f8">
+  <title>HEIMDALL · SPHEREx Workbench</title>
+  <link rel="stylesheet" href="/workbench.css">
+  <script type="module" src="/workbench.js"></script>
+</head>
+<body>
+  <a class="skip" id="skip-inspector" href="#inspector">Skip to investigation details</a>
+  <svg class="sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <symbol id="mark" viewBox="0 0 32 32"><path d="M16 3 29 16 16 29 3 16Z M16 9v14M9 16h14"/><circle cx="16" cy="16" r="4"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="5.5"/><path d="m15 15 5 5"/></symbol>
+    <symbol id="i-map" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><ellipse cx="12" cy="12" rx="3.5" ry="8"/><path d="M4 12h16"/></symbol>
+    <symbol id="i-focus" viewBox="0 0 24 24"><path d="M9 4H4v5m11-5h5v5M4 15v5h5m11-5v5h-5"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-5-5 5 5-5 5"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24"><path d="m10 7 2-2a4 4 0 0 1 6 6l-2 2m-2 4-2 2a4 4 0 0 1-6-6l2-2m1 4 6-6"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="m8 5 12 7-12 7Z"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path d="M9 5v14m6-14v14"/></symbol>
+    <symbol id="i-layers" viewBox="0 0 24 24"><path d="m3 8 9-5 9 5-9 5Zm0 4 9 5 9-5M3 16l9 5 9-5"/></symbol>
+    <symbol id="i-chart" viewBox="0 0 24 24"><path d="M4 4v16h16M7 15l4-5 4 2 5-7"/></symbol>
+  </svg>
+  <header class="topbar">
+    <div class="brand"><svg class="logo"><use href="#mark"></use></svg><span>HEIMDALL</span><span class="brand-divider"></span><span class="brand-sub">SPHEREx Workbench</span></div>
+    <div class="top-actions">
+      <span id="connection" class="connection" role="status"><i></i>Connecting</span>
+      <button id="show-jobs" class="quiet" type="button">Jobs</button>
+      <button id="show-system" class="quiet" type="button">Data status</button>
+    </div>
+  </header>
+  <main class="page">
+    <div id="notice" class="notice" role="status" hidden></div>
+    <section class="page-heading" aria-labelledby="title">
+      <div><h1 id="title">Explore the sky</h1><p id="subtitle">Explore SPHEREx observations and trace findings to their evidence.</p></div>
+      <div class="heading-actions">
+        <button id="share" class="quiet" type="button"><svg><use href="#i-link"></use></svg>Copy view</button>
+        <button id="open-field" class="primary" type="button"><svg><use href="#i-search"></use></svg>Search sky</button>
+      </div>
+    </section>
+    <div class="workspace" data-panel="none">
+      <aside class="rail" id="workbench-controls" aria-label="Investigation controls">
+        <div class="rail-top"><h2>Investigations</h2><div class="segmented" id="library-tabs" aria-label="Investigation type"><button type="button" data-library="targets" aria-pressed="true">Targets</button><button type="button" data-library="runs" aria-pressed="false">Saved fields</button></div></div>
+        <div id="library" class="library" aria-busy="true"><p class="empty">Loading investigations…</p></div>
+        <section class="rail-section" aria-labelledby="layers-title">
+          <h2 id="layers-title"><svg><use href="#i-layers"></use></svg>Map layers</h2>
+          <div id="layers"></div>
+        </section>
+        <section class="rail-section filters" aria-labelledby="filter-title">
+          <div class="section-line"><h2 id="filter-title">Filters</h2><button type="button" class="text-button" id="clear-filters">Reset</button></div>
+          <label>Detector <select id="detector"><option value="">All detectors</option></select></label>
+          <label>Release <select id="release"><option value="">All releases</option></select></label>
+          <label>Quality <select id="quality"><option value="">All records</option><option value="usable">Usable measurements</option><option value="excluded">Flagged or excluded</option></select></label>
+          <details class="time-filter"><summary>Observation range (MJD)</summary><div><input id="mjd-start" type="number" step="any" placeholder="From" aria-label="Start MJD"><input id="mjd-end" type="number" step="any" placeholder="To" aria-label="End MJD"></div></details>
+          <details class="time-filter"><summary>Wavelength range (µm)</summary><div><input id="wave-start" type="number" min="0" step="any" placeholder="From" aria-label="Minimum wavelength"><input id="wave-end" type="number" min="0" step="any" placeholder="To" aria-label="Maximum wavelength"></div></details>
+        </section>
+      </aside>
+      <div class="visuals">
+        <section class="map-panel" aria-labelledby="map-heading">
+          <div class="map-header">
+            <div><h2 id="map-heading">SPHEREx DR1 sky</h2><span id="map-mode">Galactic · Hammer</span></div>
+            <div class="map-modes">
+              <button id="all-sky" type="button" class="map-button"><svg><use href="#i-map"></use></svg>All sky</button>
+              <button id="focus-field" type="button" class="map-button" title="Focus selected field"><svg><use href="#i-focus"></use></svg>Focus</button>
+            </div>
+          </div>
+          <div class="image-controls">
+            <div class="plane-control">
+              <button id="plane-prev" type="button" class="map-button" aria-label="Previous wavelength plane">‹</button>
+              <label for="wavelength-plane">Plane</label>
+              <input id="wavelength-plane" type="number" value="2" min="1" max="102" step="1">
+              <button id="plane-next" type="button" class="map-button" aria-label="Next wavelength plane">›</button>
+              <output id="wavelength-label" for="wavelength-plane">102 planes</output>
+            </div>
+            <label class="image-stretch">Brightness <input type="range" id="image-brightness" min="-50" max="100" value="0" aria-label="Display brightness"></label>
+            <button type="button" id="pick-region" class="map-button" aria-pressed="false">Select region</button>
+          </div>
+          <div class="map-stage" id="map-stage">
+            <canvas id="sky" tabindex="0" aria-label="Interactive ICRS sky map. Use arrow keys to pan, plus and minus to zoom. Measurements are also available in the analysis tab." aria-describedby="map-description"></canvas>
+            <div id="map-banner" class="map-banner" hidden></div>
+            <div id="map-compass" class="compass" aria-hidden="true"><span>N</span><svg viewBox="0 0 30 29"><path d="M20 22V4l-4 5m4-5 4 5M20 22H4l5-4m-5 4 5 4"/></svg><span>E</span></div>
+            <div class="map-zoom"><button id="zoom-in" type="button" aria-label="Zoom in"><svg><use href="#i-plus"></use></svg></button><button id="zoom-out" type="button" aria-label="Zoom out"><svg><use href="#i-minus"></use></svg></button></div>
+            <div id="map-tooltip" class="map-tooltip" hidden></div>
+          </div>
+          <div class="map-footer" id="map-description"><span id="coordinates">RA — · Dec —</span><span id="field-size">Field —</span></div>
+          <div class="image-credit"><span id="image-status" role="status">Loading SPHEREx DR1 imagery…</span><a href="https://doi.org/10.26131/IRSA679" target="_blank" rel="noopener noreferrer">NASA / IPAC IRSA · DR1</a></div>
+        </section>
+        <nav class="map-tools" aria-label="Sky analysis tools">
+          <button class="quiet" type="button" data-panel="layers" aria-expanded="false" aria-controls="workbench-controls"><svg><use href="#i-layers"></use></svg>Layers &amp; filters</button>
+          <button class="quiet" type="button" data-panel="investigations" aria-expanded="false" aria-controls="workbench-controls inspector">Investigations</button>
+          <button class="quiet" type="button" data-panel="charts" aria-expanded="false" aria-controls="chart-panel"><svg><use href="#i-chart"></use></svg>Measurements</button>
+        </nav>
+        <section class="chart-panel" id="chart-panel" aria-labelledby="chart-heading">
+          <div class="chart-header"><div><h2 id="chart-heading"><svg><use href="#i-chart"></use></svg>Measurements</h2><p id="chart-subtitle">Select an investigation to inspect its data.</p></div><select id="chart-kind" aria-label="Chart type"><option value="motion">Motion</option><option value="flux">Flux over time</option><option value="spectrum">Spectrum</option><option value="observations">Observations</option></select></div>
+          <div id="chart"></div>
+          <div class="playback" id="playback" hidden>
+            <button id="play" type="button" aria-label="Play observation sequence"><svg><use href="#i-play"></use></svg></button>
+            <input id="frame" type="range" min="0" max="0" value="0" aria-label="Observation frame">
+            <button id="show-all" type="button" class="text-button">Show all</button>
+            <output id="frame-label" for="frame"></output>
+          </div>
+        </section>
+      </div>
+      <section class="inspector" id="inspector" tabindex="-1" aria-labelledby="record-title">
+        <header id="record-header"><h2 id="record-title">Investigation</h2></header>
+        <nav class="inspector-tabs" id="inspector-tabs" aria-label="Investigation views">
+          <button type="button" data-tab="overview" aria-pressed="true">Overview</button><button type="button" data-tab="analysis" aria-pressed="false">Analysis</button><button type="button" data-tab="evidence" aria-pressed="false">Evidence</button><button type="button" data-tab="history" aria-pressed="false">History</button>
+        </nav>
+        <div class="trace-nav" id="trace-nav" hidden><button type="button" id="trace-back" class="text-button">Back</button><button type="button" id="trace-forward" class="text-button">Forward</button><span id="trace-label"></span></div>
+        <div id="record" aria-busy="true"><p class="empty">Loading saved evidence…</p></div>
+      </section>
+    </div>
+    <footer class="page-footer"><span>HEIMDALL <span id="software-version"></span> · SPHEREx research workbench</span><span id="map-disclaimer">DR1 survey imagery with HEIMDALL evidence overlays.</span></footer>
+  </main>
+  <dialog id="dialog"><div class="dialog-header"><h2 id="dialog-title"></h2><button id="close-dialog" type="button" class="quiet">Close</button></div><div id="dialog-content"></div></dialog>
+</body>
+</html>

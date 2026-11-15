@@ -11,3 +11,9 @@ dependencies = ["numpy>=2.0", "scipy>=1.13", "astropy>=7.0"]
 
 [project.optional-dependencies]
 tls = ["certifi"]
+
+[tool.setuptools.packages.find]
+include = ["heimdall*"]
+
+[tool.setuptools.package-data]
+heimdall = ["web/*.html", "web/*.css", "web/*.js"]

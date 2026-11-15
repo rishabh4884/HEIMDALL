@@ -52,13 +52,15 @@ expected positions, bounded epoch-balanced retrieval, forced photometry and regi
 null references, a blind pipeline run on the same exposures, and competing hypotheses with evidence. Method, limits and reproduction: `docs/NASA_TARGETS.md`;
 measured outcomes: `docs/NASA_TARGET_MATRIX.md`; requirements: `docs/REQUIREMENTS_LEDGER.md`; acceptance scenarios: `docs/NASA_ACCEPTANCE.md`.
 
-## Backend service for the frontend (2026-11-15)
+## Web workbench
 
 ```bash
 python3 -m heimdall serve --with-worker     # HTTP JSON API on http://127.0.0.1:8765/api/v1 plus the data worker
 python3 -m heimdall data worker             # or run the worker separately (one worker per state directory)
 scripts/demo_submission.sh [--live] [--tests]   # offline/cached demo of saved targets, provenance, data service and API
 ```
+
+Open [the workbench](http://127.0.0.1:8765/) from the running server. The sky viewer uses IRSA's SPHEREx DR1 display imagery and stores tiles locally as you browse. To demonstrate saved data and cached tiles without contacting the archive, use `HEIMDALL_OFFLINE=1 python3 -m heimdall serve`. See [the workbench guide](docs/WORKBENCH.md) for map controls, evidence tracing and reports.
 
 Requests are readiness-first: they return a stored result, a local-index answer or a durable job id, and never surface an archive
 outage as an error or a scientific result. Contracts: `docs/FRONTEND_HANDOFF.md`; data service: `docs/DATA_SERVICE.md`; progress

@@ -180,6 +180,15 @@ class Api:
             if not obs and not sha:
                 raise ApiError(400, "INPUT_INVALID", "give obs_id or sha256")
             return 200, lookup(self.engine, obs_id=obs, sha256=sha)
+        if route == ("GET", "evidence") and p == ["evidence", "preview"]:
+            from .web_preview import cached_preview
+            sha = query.get("sha256", [""])[0]
+            if not re.fullmatch(r"[0-9a-f]{64}", sha):
+                raise ApiError(400, "INPUT_INVALID", "sha256 must be 64 hex characters")
+            preview = cached_preview(self.svc, Path(self.engine.settings.cache_dir), sha)
+            if preview is None:
+                raise ApiError(404, "NOT_FOUND", "No displayable, checksum-matched science image is available in this local cache.")
+            return 200, preview
         if route == ("GET", "inventory") and len(p) == 2 and p[1] == "partitions":
             from .dataservice.allsky import AllSkyIndex
             tile = _num(query, "tile_deg", 0.25, 5.0, 2.0)
@@ -191,11 +200,19 @@ class Api:
                 raise ApiError(400, "INPUT_INVALID", "domain must be ra_min,ra_max,dec_min,dec_max") from None
             idx = AllSkyIndex(self.svc)
             return 200, idx.accounting(idx.domain_id(tile, domain), offset=int(_num(query, "offset", 0, 1e7, 0)), limit=int(_num(query, "limit", 1, 2000, 200)))
+        if route == ("GET", "inventory") and p == ["inventory", "domains"]:
+            rows = self.svc.db.query("SELECT DISTINCT domain FROM allsky_partitions ORDER BY domain")
+            return 200, {"domains": [row["domain"] for row in rows]}
         if route == ("GET", "status"):
             return 200, {"metrics": self.svc.metrics(), "freshness": self.svc.freshness()}
         if route == ("GET", "targets"):
             if len(p) == 1:
-                return 200, {"targets": self.engine.targets()}
+                from .targets.registry import NASA_TARGETS
+                targets = self.engine.targets()
+                for target in targets:
+                    spec = NASA_TARGETS[target["target_id"]]
+                    target["seed"] = {"ra_deg": spec.seed_ra_deg, "dec_deg": spec.seed_dec_deg, "epoch_jyear": spec.seed_epoch_jyear}
+                return 200, {"targets": targets}
             tid = self._target_id(p[1])
             if len(p) == 2:
                 return 200, self._read_json(self.targets_dir / tid / "latest.json", f"no saved investigation for {tid}")
@@ -223,28 +240,46 @@ class Api:
             if len(p) == 3 and p[2] == "claims":
                 from .targets.claims import build_claims
                 return 200, build_claims(self._read_json(self.targets_dir / tid / "latest.json", f"no saved investigation for {tid}"))
-        if route == ("GET", "investigations") and len(p) in (2, 3) and (len(p) == 2 or p[2] == "claims"):
+        if route == ("GET", "investigations") and len(p) in (2, 3):
             m = RE_INV.match(p[1])
             if not m:
                 raise ApiError(400, "INPUT_INVALID", "investigation id must look like tinv:<target>:<8 hex>")
             doc = self._read_json(self.targets_dir / m.group(1) / f"{m.group(2)}.json", f"no saved investigation {p[1]}")
             if doc.get("investigation_id") != p[1]:
                 raise ApiError(404, "NOT_FOUND", f"no saved investigation {p[1]}")
-            if len(p) == 3:
+            if len(p) == 2:
+                return 200, doc
+            if p[2] == "claims":
                 from .targets.claims import build_claims
                 return 200, build_claims(doc)
-            return 200, doc
+            if p[2] == "patterns":
+                from .patterns import build_patterns
+                return 200, build_patterns(doc)
+            if p[2] == "report":
+                from .report import build_report, render_markdown
+                rep = build_report(doc, self.versions(m.group(1))["versions"])
+                fmt = query.get("format", ["json"])[0]
+                if fmt not in ("json", "md"):
+                    raise ApiError(400, "INPUT_INVALID", "format must be json or md")
+                return 200, rep if fmt == "json" else {"markdown": render_markdown(rep)}
         if route == ("POST", "investigations") and len(p) == 1:
             return self.submit(body or {})
         if route == ("POST", "runs") and len(p) == 1:
             return self.submit_run(body or {})
-        if route == ("GET", "runs") and len(p) == 2:
+        if route == ("GET", "runs") and len(p) == 1:
+            runs = sorted(self.engine.store.list(), key=lambda r: r.get("created_at") or "", reverse=True)
+            return 200, {"runs": [{k: v for k, v in row.items() if k != "path"} for row in runs[:200]]}
+        if route == ("GET", "runs") and (len(p) == 2 or len(p) == 3 and p[2] == "skymap"):
             if not RE_RUN.match(p[1]):
                 raise ApiError(400, "INPUT_INVALID", "run id must look like R<yyyymmdd>T<hhmmss>-<8 hex>")
             try:
-                return 200, self.engine.load(p[1])
+                result = self.engine.load(p[1])
             except Exception:  # noqa: BLE001 - unknown or unreadable run directory
                 raise ApiError(404, "NOT_FOUND", f"no saved run {p[1]}") from None
+            if len(p) == 3:
+                from .skymap.layers import build_skymap
+                return 200, build_skymap(result)
+            return 200, result
         if route == ("GET", "coverage") and len(p) == 1:
             return 200, self.coverage(query)
         if route == ("GET", "jobs"):
@@ -414,6 +449,20 @@ class Api:
 
 
 def make_handler(api: Api, token: str | None, cors_origin: str | None):
+    from importlib.resources import files
+    from .hips import HiPSCache, PREFIX
+
+    hips_cache = HiPSCache(Path(api.engine.settings.cache_dir), api.engine.settings.offline)
+    assets = {
+        "/": ("index.html", "text/html; charset=utf-8"),
+        "/workbench.css": ("workbench.css", "text/css; charset=utf-8"),
+        "/workbench.js": ("workbench.js", "text/javascript; charset=utf-8"),
+        "/sky.js": ("sky.js", "text/javascript; charset=utf-8"),
+        "/records.js": ("records.js", "text/javascript; charset=utf-8"),
+        "/charts.js": ("charts.js", "text/javascript; charset=utf-8"),
+        "/hips.js": ("hips.js", "text/javascript; charset=utf-8"),
+    }
+
     class Handler(BaseHTTPRequestHandler):
         server_version = f"HEIMDALL/{__version__}"
 
@@ -482,6 +531,31 @@ def make_handler(api: Api, token: str | None, cors_origin: str | None):
                 self._send(500, {"schema": HTTP_SCHEMA, "error": {"code": "INTERNAL", "message": type(e).__name__}})
 
         def do_GET(self):  # noqa: N802
+            path = urlsplit(self.path).path
+            if path.startswith(PREFIX):
+                status, data, content_type = hips_cache.get(path)
+                self.send_response(status)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Cache-Control", "public, max-age=3600" if status == 200 else "no-store")
+                self.end_headers()
+                self.wfile.write(data)
+                return
+            asset = assets.get(path)
+            if asset:
+                name, content_type = asset
+                data = files("heimdall").joinpath("web", name).read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Referrer-Policy", "no-referrer")
+                self.send_header("Content-Security-Policy", "default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+                self.end_headers()
+                self.wfile.write(data)
+                return
             self._dispatch("GET")
 
         def do_POST(self):  # noqa: N802
