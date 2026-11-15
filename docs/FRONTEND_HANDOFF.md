@@ -10,6 +10,9 @@ python3 -m heimdall data worker                    # worker (acquisition, retrie
 HEIMDALL_OFFLINE=1 python3 -m heimdall serve       # cached-only demo: nothing touches the network; uncached requests wait as jobs
 ```
 
+Run exactly one worker per state directory: either `serve --with-worker` or a separate `data worker`, not both (decision D-004).
+`scripts/demo_submission.sh` exercises the offline/cached path and the API end to end.
+
 CORS: `http://localhost:<any port>` and `http://127.0.0.1:<any port>` are allowed by default; set `HEIMDALL_API_CORS_ORIGIN` for another
 origin. Optional auth hook: set `HEIMDALL_API_TOKEN` and send `Authorization: Bearer <token>`. The server binds to 127.0.0.1 unless `--host`
 is given. Implementation: `heimdall/server.py` (stdlib only); tests: `tests/test_server.py`.

@@ -772,3 +772,29 @@ class RecoveryAndWorkerTests(Base):
         s = self.svc(offline=True)
         with self.assertRaises(HeimdallError):
             s.serve(threading.Event(), max_ticks=1)
+
+
+class ConcurrentOpenTests(unittest.TestCase):
+    def test_processes_opening_a_fresh_database_concurrently_do_not_fail(self):
+        import threading
+        from heimdall.dataservice.db import ServiceDB
+        tmp = Path(tempfile.mkdtemp())
+        errors, dbs = [], []
+        def open_one():
+            try:
+                dbs.append(ServiceDB(tmp / "svc.sqlite3"))
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+        threads = [threading.Thread(target=open_one) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        try:
+            self.assertEqual(errors, [])
+            self.assertEqual(dbs[0].one("PRAGMA journal_mode")[0].lower(), "wal")
+        finally:
+            for d in dbs:
+                d.conn.close()
+            shutil.rmtree(tmp, ignore_errors=True)
+

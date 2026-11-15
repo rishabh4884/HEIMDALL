@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 from .schemas import SCHEMA_VERSION
@@ -54,15 +55,30 @@ class ServiceDB:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()
-        self.conn = sqlite3.connect(str(self.path), check_same_thread=False, isolation_level=None)
+        # Several processes (API server, worker, CLI) share one file: wait for locks instead of failing, and retry first-time
+        # initialisation (journal-mode switch, DDL) a bounded number of times when another process is initialising concurrently.
+        self.conn = sqlite3.connect(str(self.path), check_same_thread=False, isolation_level=None, timeout=30.0)
         self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA busy_timeout=30000")
+        for attempt in range(50):
+            try:
+                self._init_schema()
+                break
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc) or attempt == 49:
+                    raise
+                time.sleep(0.1 + 0.02 * attempt)
+
+    def _init_schema(self) -> None:
+        if self.conn.execute("PRAGMA journal_mode").fetchone()[0].lower() != "wal":
+            self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
         have = self.conn.execute("PRAGMA user_version").fetchone()[0]
         if have > SCHEMA_VERSION:
             raise RuntimeError(f"service database schema {have} is newer than this software ({SCHEMA_VERSION})")
         self.conn.executescript(DDL)
-        self.conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+        if have != SCHEMA_VERSION:
+            self.conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
     def execute(self, sql: str, args: tuple = ()):
         with self.lock:

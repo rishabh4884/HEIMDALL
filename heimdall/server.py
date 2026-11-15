@@ -327,11 +327,11 @@ def serve(engine_factory, host: str = "127.0.0.1", port: int = 8765, with_worker
     engine = engine_factory()
     stop = threading.Event()
     worker = None
+    api = Api(engine, worker_running=lambda: bool(worker and worker.is_alive()))  # initialises the service database first
     if with_worker and not engine.settings.offline:
-        wengine = engine_factory()
-        worker = threading.Thread(target=lambda: wengine.data_service().serve(stop), name="heimdall-worker", daemon=True)
+        wservice = engine_factory().data_service()  # own connection, opened after the API's
+        worker = threading.Thread(target=lambda: wservice.serve(stop), name="heimdall-worker", daemon=True)
         worker.start()
-    api = Api(engine, worker_running=lambda: bool(worker and worker.is_alive()))
     httpd = ThreadingHTTPServer((host, port), make_handler(api, os.environ.get("HEIMDALL_API_TOKEN") or None,
                                                            os.environ.get("HEIMDALL_API_CORS_ORIGIN") or None))
     httpd.daemon_threads = True
