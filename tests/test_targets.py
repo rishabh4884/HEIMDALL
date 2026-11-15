@@ -960,3 +960,21 @@ class ClaimValidationScopeTests(unittest.TestCase):
         m = next(c for c in build_claims(d)["claims"] if c["analysis"] == "motion")
         self.assertEqual((m["claim_type"], m["strength"]), ("CONSISTENT_WITH", "PROVISIONAL_UNVALIDATED_METHOD"))
         self.assertTrue(m["statement"].startswith("Provisional (method not validated on real data)"))
+
+
+class PatternRecordTests(unittest.TestCase):
+    def test_dimensions_are_linked_missing_ones_visible_and_wavelength_kept_apart_from_time(self):
+        from heimdall.patterns import build_patterns
+        cfg = EngineConfig()
+        ms = series_measurements([2000, 3500, 2000, 3600, 2100], n_controls=12)
+        doc = {"investigation_id": "tinv:NASA-04:0000ffff", "analyses": {"variability": analyse_variability(ms, cfg)}, "measurements": ms,
+               "evidence": [{"evidence_id": "ev:1", "source": "targets.variability", "dependency_group": "forced_photometry"}]}
+        p = build_patterns(doc)
+        dims = {d["dimension"]: d for d in p["dimensions"]}
+        self.assertEqual(set(dims), {"motion", "temporal", "spectral", "spatial"})
+        self.assertEqual(dims["motion"]["status"], "NOT_RUN")
+        self.assertIn("motion", [m["dimension"] for m in p["missing"]])
+        self.assertIn("wavelength differences are not variability", dims["temporal"]["guard"])
+        self.assertIn("never used as a variability test", dims["spectral"]["guard"])
+        self.assertEqual(dims["temporal"]["links"]["evidence"], ["ev:1"])
+        self.assertEqual(p["cross_dimension"]["independent_lines_of_evidence"], ["forced_photometry"])

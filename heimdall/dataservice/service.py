@@ -446,6 +446,8 @@ class DataService:
             filters["mjd_end"] = repr(float(region.mjd_end))
         if region.collections:
             filters["collections"] = ",".join(sorted(region.collections))
+        if self.cfg.discovery_maxrec:
+            filters["maxrec"] = str(int(self.cfg.discovery_maxrec))
         t0 = time.monotonic()
         try:
             res = self.source.discover(DiscoveryQuery(region=SkyRegion(ra_deg=region.ra_deg, dec_deg=region.dec_deg, radius_deg=region.radius_deg), filters=filters))
@@ -465,9 +467,15 @@ class DataService:
         if not recs and res.outcome is ResultOutcome.OK:
             return self.jobs.schedule_retry(self.jobs.get(jid), error={"code": "DATA_MALFORMED", "message": "answer lists only legacy releases"},
                                             reason="answer contained no current-release observation; retrying automatically", min_delay_s=self._breaker_hint())
+        truncated = ld.get("truncated")
         sid = self.inventory.record_sync(region, scope, [(r.obs_id, r.release) for r in recs], completed_at=now_iso(self.clock()), route=route,
-                                         from_cache=res.provenance.origin.value == "CACHED")
-        outcome = {"sync_id": sid, "n_observations": len(recs), "route": route, "discovery_outcome": res.outcome.value}
+                                         from_cache=res.provenance.origin.value == "CACHED", truncated=truncated is True)
+        outcome = {"sync_id": sid, "n_observations": len(recs), "route": route, "discovery_outcome": res.outcome.value,
+                   "truncated": truncated, "row_counts": ld.get("row_counts"), "maxrec": ld.get("maxrec")}
+        if truncated is True:
+            # the answer reached the explicit limit: observations are registered, but the region is not certified as indexed
+            return self.jobs.transition(jid, JobState.COMPLETE, reason="discovery answer reached MAXREC (truncated): region needs subdivision",
+                                        result=outcome)
         if not recs and res.outcome not in (ResultOutcome.NO_OBSERVATIONS, ResultOutcome.OK):
             # rows were returned but none could be parsed: an archive contract problem, not an empty sky. Retry; never NO_COVERAGE.
             return self.jobs.schedule_retry(self.jobs.get(jid), error={"code": "DATA_MALFORMED", "message": "discovery rows could not be parsed"},

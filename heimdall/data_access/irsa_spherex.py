@@ -321,16 +321,21 @@ class IrsaSpherexSource(DataSource):
         region = query.region
         rows: list[dict[str, str]] = []
         from_cache = []
+        maxrec = int(filters["maxrec"]) if filters.get("maxrec") else None
+        self._sia_counts: dict[str, int] = {}
         for collection in self._sia_collections(query):
             params = {"COLLECTION": collection,
                       "POS": f"CIRCLE {region.ra_deg:.10f} {region.dec_deg:.10f} {region.radius_deg:.10f}",
                       "RESPONSEFORMAT": "CSV"}
+            if maxrec:
+                params["MAXREC"] = str(maxrec)  # explicit limit: an answer with this many rows is treated as truncated (DALI)
             text = self._sia_get(SIA + "?" + urllib.parse.urlencode(params))
             from_cache.append(self._from_cache)
             try:
                 raw_rows = list(csv.DictReader(io.StringIO(text)))
             except csv.Error as exc:
                 raise HeimdallError.of(ErrorCode.DATA_MALFORMED, f"SIA2 CSV could not be parsed: {exc}") from None
+            self._sia_counts[collection] = len(raw_rows)
             for raw in raw_rows:
                 access_url = (raw.get("access_url") or "").strip()
                 match = _SIA_PRODUCT.search(urllib.parse.urlsplit(access_url).path)
@@ -392,6 +397,8 @@ class IrsaSpherexSource(DataSource):
             if not all(d in {"1", "2", "3", "4", "5", "6"} for d in dets):
                 raise HeimdallError.of(ErrorCode.INPUT_INVALID, "detectors must be integers 1-6", filter="detectors")
             clauses.append("p.energy_bandpassname IN (" + ", ".join(f"'SPHEREx-D{d}'" for d in sorted(set(dets))) + ")")
+        if f.get("maxrec") and not (str(f["maxrec"]).isdigit() and 1 <= int(f["maxrec"]) <= 1_000_000):
+            raise HeimdallError.of(ErrorCode.INPUT_INVALID, "maxrec must be an integer 1-1000000", filter="maxrec")
         if f.get("mjd_start"):
             clauses.append(f"p.time_bounds_upper >= {_floats(f['mjd_start'], 'mjd_start'):.6f}")
         if f.get("mjd_end"):
@@ -454,8 +461,12 @@ class IrsaSpherexSource(DataSource):
             used = route
             attempts.append({"route": route, "outcome": "OK", "from_cache": self._from_cache})
             break
+        maxrec = int(dict(query.filters)["maxrec"]) if dict(query.filters).get("maxrec") else None
+        counts = dict(getattr(self, "_sia_counts", {}) or {}) if used == "sia2" else {}
+        # truncated: True when an explicit limit was reached; None when it cannot be determined (no limit sent, or the TAP route answered)
+        truncated = (any(n >= maxrec for n in counts.values()) if (maxrec and used == "sia2") else None)
         self.last_discovery = {"route_used": used or None, "attempts": attempts, "from_cache": self._from_cache if used else False,
-                               "plan_note": plan_note}
+                               "plan_note": plan_note, "row_counts": counts, "maxrec": maxrec, "truncated": truncated}
         if rows is None:
             # No route produced an answer. This is a failure, never an empty result.
             summary = "; ".join(f"{a['route']}: {a.get('error_code') or a['outcome']}" +

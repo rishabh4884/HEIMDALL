@@ -122,25 +122,28 @@ class Inventory:
                     best = max((x["release"] for x in rows), key=_release_rank)
                     db.conn.execute("UPDATE observations SET superseded_by=CASE WHEN release=? THEN NULL ELSE ? END WHERE obs_id=?", (best, best, oid))
 
-    def record_sync(self, region: RegionSpec, scope: str, members: list[tuple[str, str]], *, completed_at: str, route: str | None, from_cache: bool) -> int:
+    def record_sync(self, region: RegionSpec, scope: str, members: list[tuple[str, str]], *, completed_at: str, route: str | None, from_cache: bool,
+                    truncated: bool = False) -> int:
         newest = None
         for oid, rel in members:
             r = self.db.one("SELECT t_max FROM observations WHERE obs_id=? AND release=?", (oid, rel))
             if r and r["t_max"] is not None:
                 newest = max(newest or -math.inf, r["t_max"])
         cur = self.db.execute(
-            "INSERT INTO syncs(ra,dec,radius,detectors,mjd_start,mjd_end,collections,scope,completed_at,route,from_cache,n_obs,newest_t_max,members) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO syncs(ra,dec,radius,detectors,mjd_start,mjd_end,collections,scope,completed_at,route,from_cache,n_obs,newest_t_max,members,truncated) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (region.ra_deg, region.dec_deg, region.radius_deg, json.dumps(sorted(region.detectors)) if region.detectors else None, region.mjd_start,
              region.mjd_end, json.dumps(sorted(region.collections or CURRENT_COLLECTIONS)), scope, completed_at, route, int(from_cache), len(members),
-             newest, json.dumps(sorted(members))))
+             newest, json.dumps(sorted(members)), int(bool(truncated))))
         return int(cur.lastrowid)
 
     # -- reads (never touch the network) ---------------------------------------------------------
     def covering_sync(self, region: RegionSpec, scope: str = SCOPE_CURRENT):
         """The most recent completed sync whose cone, filters and collections include ``region``; None if the region is not indexed."""
         want_cols = set(region.collections or CURRENT_COLLECTIONS)
-        for s in self.db.query("SELECT * FROM syncs WHERE scope=? ORDER BY completed_at DESC, sync_id DESC", (scope,)):
+        # a truncated answer never certifies coverage; the declination prefilter keeps this cheap with many partition syncs
+        for s in self.db.query("SELECT * FROM syncs WHERE scope=? AND truncated=0 AND dec - radius <= ? AND dec + radius >= ? "
+                               "ORDER BY completed_at DESC, sync_id DESC", (scope, region.dec_deg + 1e-9, region.dec_deg - 1e-9)):
             if sep_deg(region.ra_deg, region.dec_deg, s["ra"], s["dec"]) + region.radius_deg > s["radius"] + 1e-9:
                 continue
             sd = json.loads(s["detectors"]) if s["detectors"] else None

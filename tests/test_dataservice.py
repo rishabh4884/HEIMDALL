@@ -989,3 +989,136 @@ class RetryAfterTests(Base):
         j = s.describe_job(s.jobs.get(st["job"]["job_id"]))
         self.assertEqual(j["state"], "PREPARING_DATA")
         self.assertGreaterEqual(j["next_attempt_in_s"], 600 * 0.99 if self.cfg.backoff_cap_s >= 600 else self.cfg.backoff_cap_s * 0.99)
+
+
+class AllSkyInventoryTests(Base):
+    """Partitioned all-sky inventory: planning geometry, truncation subdivision, failure/retry, completeness accounting (scripted archive)."""
+
+    def setUp(self):
+        super().setUp()
+        self.trunc_radius = None  # cones larger than this report a truncated answer
+        archive = self.archive
+        real = archive.discover
+
+        def discover(query):
+            res = real(query)
+            archive.last_discovery = dict(archive.last_discovery or {}, maxrec=20000,
+                                          truncated=bool(self.trunc_radius and query.region.radius_deg > self.trunc_radius))
+            return res
+        archive.discover = discover
+
+    def test_planning_geometry_covers_the_sky_with_polar_caps_and_bounded_cones(self):
+        from heimdall.dataservice.allsky import AllSkyIndex, plan_tiles, tile_area, tile_cone
+        tiles = plan_tiles(5.0)
+        area = sum(tile_area(**t) for t in tiles)
+        self.assertAlmostEqual(area, 41252.96, delta=1.0)  # whole sky in deg^2
+        caps = [t for t in tiles if t["dec_max"] >= 90 or t["dec_min"] <= -90]
+        self.assertEqual(len(caps), 2)
+        self.assertEqual(tile_cone(**caps[-1])[:2], (0.0, 90.0))
+        for t in tiles:  # every tile corner lies inside its cone
+            ra, dec, r = tile_cone(**t)
+            for cra in (t["ra_min"], t["ra_max"]):
+                for cdec in (t["dec_min"], t["dec_max"]):
+                    from heimdall.dataservice.allsky import _sep
+                    if abs(cdec) < 90:
+                        self.assertLessEqual(_sep(ra, dec, cra % 360, cdec), r + 1e-9)
+        s = self.svc()
+        idx = AllSkyIndex(s)
+        out = idx.plan(5.0)
+        self.assertEqual(out["partitions"], len(tiles))
+        self.assertEqual(idx.plan(5.0)["partitions"], len(tiles))  # idempotent
+        acc = idx.accounting(out["domain"])
+        self.assertFalse(acc["all_sky_complete"])
+        self.assertEqual(acc["by_state"], {"UNSEARCHED": len(tiles)})
+
+    def test_steps_are_bounded_truncation_subdivides_and_failures_are_retried(self):
+        from heimdall.dataservice.allsky import AllSkyIndex
+        s = self.svc()
+        idx = AllSkyIndex(s)
+        dom = idx.plan(2.0, (148.0, 152.0, 0.0, 4.0))["domain"]
+        self.trunc_radius = 1.0  # level-0 cones (~1.4 deg) are truncated, their children (~0.7 deg) are not
+        st = idx.step(dom, max_new=3, max_in_flight=3)
+        self.assertEqual(len(st["submitted"]), 3)
+        self.assertEqual(idx.step(dom, max_new=3, max_in_flight=3)["submitted"], [])  # bounded in-flight queue
+        self.work(s)
+        idx.reconcile(dom)
+        acc = idx.accounting(dom)
+        self.assertEqual(acc["by_state"].get("SUBDIVIDED"), 3)
+        self.assertEqual(acc["by_state"].get("UNSEARCHED"), 1 + 12)  # one untouched level-0 tile + 4 children each
+        self.assertEqual(acc["area_deg2"]["certified_searched"], 0.0)  # truncated answers certify nothing
+        self.archive.mode = "down"
+        for _ in range(4):
+            idx.step(dom, max_new=8, max_in_flight=8)
+            s.tick()
+            self.clock.advance(4000)
+            s.tick()
+        idx.reconcile(dom)
+        self.assertGreater(idx.accounting(dom)["by_state"].get("FAILED", 0), 0)  # an outage is FAILED, never SEARCHED_EMPTY
+        self.assertEqual(idx.accounting(dom)["by_state"].get("SEARCHED_EMPTY", 0), 0)
+        self.archive.mode = "ok"
+        for _ in range(10):
+            idx.step(dom, max_new=8, max_in_flight=8)
+            self.work(s)
+        idx.reconcile(dom)
+        acc = idx.accounting(dom)
+        self.assertEqual(set(acc["by_state"]) - {"SUBDIVIDED"}, {"SEARCHED_HAS_OBS"})
+        self.assertAlmostEqual(acc["area_deg2"]["fraction_certified"], 1.0, places=6)
+        self.assertFalse(acc["all_sky_complete"])  # a sub-domain never claims all-sky completeness
+
+    def test_all_sky_complete_only_when_every_leaf_of_the_whole_sky_is_certified(self):
+        from heimdall.dataservice.allsky import AllSkyIndex
+        s = self.svc()
+        idx = AllSkyIndex(s)
+        dom = idx.plan(5.0)["domain"]
+        s.db.execute("UPDATE allsky_partitions SET state='SEARCHED_EMPTY' WHERE domain=?", (dom,))
+        self.assertTrue(idx.accounting(dom)["all_sky_complete"])
+        s.db.execute("UPDATE allsky_partitions SET state='SEARCHED_UNVERIFIED' WHERE partition_id=(SELECT partition_id FROM allsky_partitions LIMIT 1)")
+        self.assertFalse(idx.accounting(dom)["all_sky_complete"])
+
+    def test_planning_benchmark_whole_sky_at_two_degrees(self):
+        import time as _t
+        from heimdall.dataservice.allsky import AllSkyIndex
+        s = self.svc()
+        idx = AllSkyIndex(s)
+        t0 = _t.perf_counter()
+        out = idx.plan(2.0)
+        t_plan = _t.perf_counter() - t0
+        t0 = _t.perf_counter()
+        acc = idx.accounting(out["domain"], limit=10)
+        t_acc = _t.perf_counter() - t0
+        self.assertGreater(out["partitions"], 9000)
+        self.assertLess(t_plan, 20.0)
+        self.assertLess(t_acc, 10.0)
+        print(f"\n[benchmark] whole-sky 2-degree plan: {out['partitions']} partitions in {t_plan:.2f} s; accounting {t_acc:.2f} s")
+
+
+class MirrorPlanTests(Base):
+    def test_mirror_plan_refuses_without_measured_sizes_and_estimates_with_them(self):
+        from heimdall.dataservice.allsky import AllSkyIndex, mirror_plan
+        s = self.svc()
+        idx = AllSkyIndex(s)
+        dom = idx.plan(2.0, (148.0, 152.0, 0.0, 4.0))["domain"]
+        archive = self.archive
+        real = archive.discover
+
+        def discover(q):
+            res = real(q)
+            archive.last_discovery = dict(archive.last_discovery or {}, maxrec=20000, truncated=False)
+            return res
+        archive.discover = discover
+        for _ in range(4):
+            idx.step(dom, max_new=4, max_in_flight=4)
+            self.work(s)
+        idx.reconcile(dom)
+        plan = mirror_plan(s, dom, max_bytes=10 ** 9)
+        self.assertEqual(plan["estimate_state"], "UNMEASURED")
+        self.assertFalse(plan["feasible"])
+        self.assertIn("refused", plan["execution"])
+        self.assertEqual(plan["products_indexed"], 6)  # overlapping cones deduplicated
+        st = s.prefetch(REGION, cutout_size_deg=None, max_observations=1)  # one full-frame sample, measured from the verified store
+        self.work(s)
+        plan = mirror_plan(s, dom, max_bytes=10 ** 9)
+        self.assertEqual(plan["estimate_state"], "MEASURED")
+        self.assertEqual(plan["products_to_fetch"], 5)
+        self.assertTrue(plan["feasible"])
+        self.assertFalse(mirror_plan(s, dom, max_bytes=10)["feasible"])  # over budget

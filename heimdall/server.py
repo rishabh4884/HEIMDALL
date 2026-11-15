@@ -9,6 +9,9 @@ Endpoints (prefix ``/api/v1``):
   GET  /health                         software/schema versions, offline flag, worker heartbeat
   GET  /status                         data-service metrics and index freshness
   GET  /capabilities                   versioned capability contract (analyses, prerequisites, limits, validation state)
+  GET  /targets/{target_id}/patterns   motion/temporal/spectral/spatial pattern record with links, dependency groups and missing dimensions
+  GET  /targets/{target_id}/followup   discriminating follow-up actions (bounded, persisted, never repeated); POST /followup/{action_id}/run
+  GET  /inventory/partitions[?tile_deg=&domain=&offset=&limit=]  all-sky partition states and coverage accounting (read-only)
   GET  /compare?a=&b=                  two target versions (tinv:) or two runs (R...): differences, conclusion changes, comparability
   GET  /evidence/lookup?obs_id=|sha256=  reverse lookup: every version, claim, manifest and run that depends on an input
   GET  /targets                        registered NASA targets with their saved result summary
@@ -176,6 +179,17 @@ class Api:
             if not obs and not sha:
                 raise ApiError(400, "INPUT_INVALID", "give obs_id or sha256")
             return 200, lookup(self.engine, obs_id=obs, sha256=sha)
+        if route == ("GET", "inventory") and len(p) == 2 and p[1] == "partitions":
+            from .dataservice.allsky import AllSkyIndex
+            tile = _num(query, "tile_deg", 0.25, 5.0, 2.0)
+            dom_raw = query.get("domain", ["0,360,-90,90"])[0]
+            try:
+                domain = tuple(float(x) for x in dom_raw.split(","))
+                assert len(domain) == 4
+            except (ValueError, AssertionError):
+                raise ApiError(400, "INPUT_INVALID", "domain must be ra_min,ra_max,dec_min,dec_max") from None
+            idx = AllSkyIndex(self.svc)
+            return 200, idx.accounting(idx.domain_id(tile, domain), offset=int(_num(query, "offset", 0, 1e7, 0)), limit=int(_num(query, "limit", 1, 2000, 200)))
         if route == ("GET", "status"):
             return 200, {"metrics": self.svc.metrics(), "freshness": self.svc.freshness()}
         if route == ("GET", "targets"):
@@ -188,6 +202,16 @@ class Api:
                 return 200, self._read_json(self.targets_dir / tid / "latest_attempt.json", f"no recorded attempt for {tid}")
             if len(p) == 3 and p[2] == "versions":
                 return 200, self.versions(tid)
+            if len(p) == 3 and p[2] == "followup":
+                from .followup import plan
+                if not tid.startswith("NASA-"):
+                    raise ApiError(400, "INPUT_INVALID", "follow-up planning is available for registered targets")
+                if not (self.targets_dir / tid / "latest.json").is_file():
+                    raise ApiError(404, "NOT_FOUND", f"no saved investigation for {tid}")
+                return 200, plan(self.engine, tid, budget_products=int(_num(query, "budget_products", 0, 256, 32)))
+            if len(p) == 3 and p[2] == "patterns":
+                from .patterns import build_patterns
+                return 200, build_patterns(self._read_json(self.targets_dir / tid / "latest.json", f"no saved investigation for {tid}"))
             if len(p) == 3 and p[2] == "claims":
                 from .targets.claims import build_claims
                 return 200, build_claims(self._read_json(self.targets_dir / tid / "latest.json", f"no saved investigation for {tid}"))
@@ -221,6 +245,12 @@ class Api:
             jid = self._job_id(p[1])
             if len(p) == 2:
                 return 200, self.job(jid)
+        if route == ("POST", "followup") and len(p) == 3 and p[2] == "run":
+            from .followup import run
+            if not re.match(r"^fup:[0-9a-f]{14}$", p[1]):
+                raise ApiError(400, "INPUT_INVALID", "action id must look like fup:<14 hex>")
+            out = run(self.engine, p[1], budget_products=int(_num(query, "budget_products", 0, 256, 32)))
+            return (202 if out.get("state") == "SUBMITTED" else 200), out
         if route == ("POST", "jobs") and len(p) == 3 and p[2] == "cancel":
             jid = self._job_id(p[1])
             if self.svc.jobs.get(jid) is None:

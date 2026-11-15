@@ -28,7 +28,8 @@ CREATE INDEX IF NOT EXISTS obs_pos ON observations(s_ra, s_dec);
 CREATE TABLE IF NOT EXISTS syncs(
   sync_id INTEGER PRIMARY KEY AUTOINCREMENT, ra REAL NOT NULL, dec REAL NOT NULL, radius REAL NOT NULL,
   detectors TEXT, mjd_start REAL, mjd_end REAL, collections TEXT NOT NULL, scope TEXT NOT NULL, completed_at TEXT NOT NULL,
-  route TEXT, from_cache INTEGER NOT NULL DEFAULT 0, n_obs INTEGER NOT NULL, newest_t_max REAL, members TEXT NOT NULL);
+  route TEXT, from_cache INTEGER NOT NULL DEFAULT 0, n_obs INTEGER NOT NULL, newest_t_max REAL, members TEXT NOT NULL,
+  truncated INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS products(
   sha256 TEXT PRIMARY KEY, path TEXT NOT NULL, size INTEGER NOT NULL, created_at TEXT NOT NULL, validated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS product_keys(
@@ -49,6 +50,13 @@ CREATE TABLE IF NOT EXISTS route_events(
 CREATE TABLE IF NOT EXISTS investigation_results(
   key TEXT PRIMARY KEY, investigation_id TEXT NOT NULL, saved_to TEXT NOT NULL, manifest_id TEXT, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS counters(name TEXT PRIMARY KEY, value REAL NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS allsky_partitions(
+  partition_id TEXT PRIMARY KEY, domain TEXT NOT NULL, level INTEGER NOT NULL, parent TEXT,
+  ra_min REAL NOT NULL, ra_max REAL NOT NULL, dec_min REAL NOT NULL, dec_max REAL NOT NULL,
+  cone_ra REAL NOT NULL, cone_dec REAL NOT NULL, cone_radius REAL NOT NULL, area_deg2 REAL NOT NULL,
+  state TEXT NOT NULL, job_id TEXT, sync_id INTEGER, n_obs INTEGER, truncated INTEGER, attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT, searched_at TEXT, updated_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS allsky_state ON allsky_partitions(domain, state);
 """
 
 
@@ -78,6 +86,8 @@ class ServiceDB:
         have = self.conn.execute("PRAGMA user_version").fetchone()[0]
         if have > SCHEMA_VERSION:
             raise RuntimeError(f"service database schema {have} is newer than this software ({SCHEMA_VERSION})")
+        if 0 < have < 2 and "truncated" not in {r[1] for r in self.conn.execute("PRAGMA table_info(syncs)")}:
+            self.conn.execute("ALTER TABLE syncs ADD COLUMN truncated INTEGER NOT NULL DEFAULT 0")  # v1 -> v2, additive
         self.conn.executescript(DDL)
         if have != SCHEMA_VERSION:
             self.conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")

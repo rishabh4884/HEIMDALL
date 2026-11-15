@@ -135,7 +135,7 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--no-svg", action="store_true")
     s.add_argument("--quiet", action="store_true")
     s = sub.add_parser("target", help="named (NASA-01..05) or coordinate-addressable target investigations")
-    s.add_argument("action", choices=["list", "resolve", "run", "show", "matrix", "reevaluate", "claims"])
+    s.add_argument("action", choices=["list", "resolve", "run", "show", "matrix", "reevaluate", "claims", "followup", "followup-run"])
     s.add_argument("target", nargs="?", help="NASA-01..NASA-05 or a name fragment")
     s.add_argument("--ra", type=float)
     s.add_argument("--dec", type=float)
@@ -210,6 +210,15 @@ def _parser() -> argparse.ArgumentParser:
     s = sub.add_parser("cache", help="list or clear cached products")
     s.add_argument("action", choices=["list", "clear"])
     s.add_argument("--older-than-days", type=float)
+    s = sub.add_parser("inventory", help="partitioned all-sky metadata inventory: plan, step (queue INDEX jobs), status/accounting")
+    s.add_argument("action", choices=["plan", "step", "status", "mirror-plan"])
+    s.add_argument("--tile-deg", type=float, default=2.0)
+    s.add_argument("--max-bytes", type=int, default=10 * 1024 ** 3, help="mirror-plan: byte budget")
+    s.add_argument("--domain", default="0,360,-90,90", help="ra_min,ra_max,dec_min,dec_max (default: whole sky)")
+    s.add_argument("--max-new", type=int, default=4)
+    s.add_argument("--max-in-flight", type=int, default=8)
+    s.add_argument("--refresh-age-s", type=float)
+    s.add_argument("--limit", type=int, default=50)
     s = sub.add_parser("scientist", help="capabilities, compare two versions/runs, reverse evidence lookup")
     s.add_argument("action", choices=["capabilities", "compare", "lookup"])
     s.add_argument("a", nargs="?", help="compare: first tinv:/run id; lookup: obs_id or sha256")
@@ -237,6 +246,22 @@ def _run(args) -> int:
     from .pipeline.runner import InvestigationRequest
 
     cfg_path = getattr(args, "config", None)
+    if args.command == "inventory":
+        from .dataservice.allsky import AllSkyIndex
+        eng = Engine.from_environment(_env_file())
+        idx = AllSkyIndex(eng.data_service())
+        domain = tuple(float(x) for x in args.domain.split(","))
+        dom = idx.domain_id(args.tile_deg, domain)
+        if args.action == "plan":
+            _print(idx.plan(args.tile_deg, domain), True)
+        elif args.action == "step":
+            _print(idx.step(dom, max_new=args.max_new, max_in_flight=args.max_in_flight, refresh_age_s=args.refresh_age_s), True)
+        elif args.action == "mirror-plan":
+            from .dataservice.allsky import mirror_plan
+            _print(mirror_plan(eng.data_service(), dom, max_bytes=args.max_bytes), True)
+        else:
+            _print(idx.accounting(dom, limit=args.limit), True)
+        return 0
     if args.command == "scientist":
         from .scientist import capabilities, compare, lookup
         eng = Engine.from_environment(_env_file())
@@ -449,6 +474,14 @@ def _target(engine, args) -> int:
         return 0
     if args.action == "show":
         _print(engine.target_result(args.target), True)
+        return 0
+    if args.action == "followup":  # discriminating follow-up plan (persisted; actions never repeated)
+        from .followup import plan
+        _print(plan(engine, args.target), True)
+        return 0
+    if args.action == "followup-run":  # args.target carries the action id
+        from .followup import run
+        _print(run(engine, args.target), True)
         return 0
     if args.action == "claims":  # auditable claims with the defensibility gate, derived from the saved result
         from .targets.claims import build_claims

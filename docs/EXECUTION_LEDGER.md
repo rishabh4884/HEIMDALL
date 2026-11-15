@@ -276,6 +276,29 @@ instead of being analysed. Full suite: 535 OK (5 live skipped).
   - reverse lookup of `2025W17_4B_0017_1D2` returns both NASA-02 versions and their claims.
 - Tests: full suite 543 OK (5 live skipped).
 
+### R2-M3 — all-sky inventory, mirror planning, follow-up loop, pattern record (this commit)
+
+- **Discovery truncation.** SIA2 discovery sends an explicit `MAXREC` and records per-collection counts and `truncated`. The schema v2
+  migration adds `syncs.truncated` and `allsky_partitions`. It was verified on a disposable copy of the live database: schema 1→2, and
+  indexed regions answer identically (63 / 40 / 341 observations).
+- **`dataservice/allsky.py`:**
+  - partitions with polar caps and circumscribing cones;
+  - bounded steps through durable INDEX jobs;
+  - truncation subdivision, failed-partition retry and refresh;
+  - accounting that keeps metadata, downloaded and used coverage apart;
+  - `mirror_plan` with measured-size estimates, refusal when nothing is measured, and pin protection.
+- **Real pilot.** Domain `T2:148,152,0,4` (4 partitions, 15.99 deg²) was planned and submitted at 10:18:56Z. IRSA discovery answered
+  HTTP 502 on both routes at 10:18Z and 10:24Z, and the circuit breakers opened. All 4 partitions stay `QUEUED` behind INDEX jobs that
+  retry automatically; none is mislabelled as searched or empty. Evidence: `.heimdall/verification/2026-11-15-submission/allsky_pilot_*.json`.
+- **`heimdall/followup.py`.** Discriminating actions with hypotheses distinguished, predictions, cost from measured sizes, availability
+  and expected value. Saturation lowers "more epochs" below "other detectors". Actions are persisted with deterministic ids and never
+  repeated; there is a budget and a stopping reason. Real plans:
+  - NASA-01 → `other_detectors` first, then `more_epochs` (LOW expected value);
+  - NASA-02 → no runnable action (deblending and more control stars are unavailable, with reasons).
+- **`heimdall/patterns.py`.** Motion, temporal, spectral and spatial records with links, guards and missing dimensions. NASA-02 has all
+  four present; NASA-04 is missing motion (not run) and spectral (not assessable).
+- Tests: full suite 550 OK (5 live skipped).
+
 ## Integration record (D-007; approved by the owner on 2026-11-15)
 
 The full individual commit history is kept; nothing is squashed. Steps and verification:

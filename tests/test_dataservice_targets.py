@@ -252,3 +252,40 @@ class EnginePreparationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FollowupTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.env = {"HEIMDALL_STATE_DIR": str(self.tmp / "state"), "HEIMDALL_CACHE_DIR": str(self.tmp / "cache"), "HEIMDALL_OFFLINE": "1"}
+        d = self.tmp / "state" / "targets" / "NASA-01"
+        d.mkdir(parents=True)
+        meas = [{"obs_id": f"O{i}", "status": "MEASURED", "saturation_risk": True, "forced": {"status": "UNUSABLE"}} for i in range(4)]
+        doc = {"investigation_id": "tinv:NASA-01:0000eeee", "target": {"target_id": "NASA-01", "category": "MOVING_OBJECT"}, "options": {"max_observations": 8},
+               "analyses": {"motion": {"verdict": "NOT_ASSESSABLE", "reasons": ["FEWER_THAN_2_EPOCHS", "FEWER_THAN_3_USABLE_POINTS"]}},
+               "measurements": meas, "hypotheses": [{"slug": "catalogue_motion", "status": "NOT_ASSESSABLE"}, {"slug": "stationary", "status": "NOT_ASSESSABLE"},
+                                                    {"slug": "registration_artifact", "status": "NOT_ASSESSABLE"}]}
+        (d / "latest.json").write_text(json.dumps(doc))
+        self.eng = Engine(settings=load_settings(environ=self.env))
+
+    def tearDown(self):
+        self.eng.data_service().close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_plan_ranks_discriminating_actions_runs_them_once_and_respects_the_budget(self):
+        from heimdall.followup import plan, run
+        p = plan(self.eng, "NASA-01")
+        kinds = [a["kind"] for a in p["actions"]]
+        self.assertEqual(kinds[0], "other_detectors")  # saturation makes more epochs in the same detectors low value
+        self.assertEqual(next(a for a in p["actions"] if a["kind"] == "more_epochs")["expected_value"], "LOW")
+        self.assertTrue(all(a["distinguishes"] for a in p["actions"]))
+        first = run(self.eng, p["next_action"])
+        self.assertEqual(first["state"], "SUBMITTED")  # a durable job (offline: waits for a worker)
+        self.assertFalse(first["data_status"]["must_resubmit"])
+        again = run(self.eng, p["next_action"])
+        self.assertIn("never repeated", again["note"])
+        p2 = plan(self.eng, "NASA-01", budget_products=8)
+        self.assertEqual(next(a for a in p2["actions"] if a["action_id"] == p["next_action"])["state"], "SUBMITTED")
+        self.assertIn("budget", p2["stopping_reason"])
+        over = run(self.eng, next(a["action_id"] for a in p2["actions"] if a["kind"] == "more_epochs"), budget_products=8)
+        self.assertIn("over budget", over["note"])

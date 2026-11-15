@@ -24,6 +24,9 @@ is given. Implementation: `heimdall/server.py` (stdlib only); tests: `tests/test
 | `GET /capabilities` | `heimdall.capabilities/1.0`: analyses, entry points, prerequisites, limits, validation state, unavailable analyses with reasons | render capability-aware controls from this, not from hard-coded assumptions |
 | `GET /compare?a=&b=` | `heimdall.comparison/1.0` for two `tinv:` versions or two run ids: parameter/input/method differences, conclusion changes, `comparability.status` | `NOT_COMPARABLE` pairs return `changes: null`; show the reasons |
 | `GET /evidence/lookup?obs_id=` or `?sha256=` | `heimdall.evidence_lookup/1.0`: every version (with `superseded_by`), claim, manifest and run that depends on the input | the reverse traversal (product -> conclusions) |
+| `GET /targets/{id}/patterns` | `heimdall.patterns/1.0`: motion / temporal / spectral / spatial records with links, dependency groups, guards, and `missing` dimensions | show missing dimensions explicitly |
+| `GET /targets/{id}/followup`, `POST /followup/{action_id}/run` | `heimdall.followup/1.0`: discriminating actions (hypotheses distinguished, predictions, cost, availability, expected value), budget, `next_action`, `stopping_reason`; run -> 202 job | an action never runs twice; over-budget runs are refused |
+| `GET /inventory/partitions?tile_deg=&domain=` | all-sky partition states and accounting (metadata vs downloaded vs used coverage; `all_sky_complete` rule) | read-only |
 | `GET /health` | versions, `offline`, `worker {running, heartbeat_age_s, heartbeat}` | show a banner when no worker is running: jobs will not progress |
 | `GET /status` | `metrics` (queue, routes, cache, bytes, worker) + `freshness` | operator panel; `freshness.all_sky_complete` is always `false` |
 | `GET /targets` | five NASA targets + saved-result summary | |

@@ -154,3 +154,30 @@ the manifest id is a hash of its content, so identical inputs give an identical 
 (legacy-release rows are rejected from the current inventory); DR1 supersedes QR3 for the same exposure and the superseded row is kept and marked,
 never silently mixed. Synthetic fixtures use a separate `synthetic` scope and keep their synthetic origin end to end. Stored results are
 provisional pipeline measurements; the data service adds no scientific validation.
+
+## Partitioned all-sky inventory and mirror planning (2026-11-15)
+
+`heimdall/dataservice/allsky.py`; CLI `inventory plan|step|status|mirror-plan`; API `GET /api/v1/inventory/partitions`.
+
+**Discovery and truncation.** SIA2 discovery sends an explicit `MAXREC` (`HEIMDALL_DS_DISCOVERY_MAXREC`, default 20000) and records the
+row count per collection.
+- An answer reaching the limit is `truncated`. Its observations are registered, but the sync never certifies coverage
+  (`syncs.truncated`, schema v2, an additive migration from v1).
+- On the TAP fallback truncation cannot be checked; such a partition is `SEARCHED_UNVERIFIED`.
+
+**Partitioning.** The sky is tiled into declination bands of near-equal-area RA cells, plus polar caps. Each tile is searched with one
+circumscribing cone (tile size 0.25–5°) as a durable INDEX job: the same retries, breakers, deadlines and recovery as everywhere else.
+- `step` reconciles finished jobs, marks stale partitions `NEEDS_REFRESH`, and submits a bounded number of new jobs (`max_new`,
+  `max_in_flight`).
+- Truncated tiles are subdivided into four children, up to level 6.
+- Failed tiles are `FAILED` and retried; an outage never becomes `SEARCHED_EMPTY`.
+
+**Accounting.** Certified area is tracked separately from partitions holding downloaded products and from partitions whose products
+were used by a frozen analysis. `all_sky_complete` is true only when every leaf of a whole-sky domain is certified.
+- Benchmark: a whole-sky 2° plan has 10,524 partitions, planned in 0.05 s, with accounting in 0.02 s on this machine.
+
+**Mirror planning.** `mirror_plan` covers the products indexed in certified partitions (deduplicated across overlapping cones), the
+calibration dependencies, and bytes estimated only from *measured* stored full-frame sizes.
+- It checks disk free space, the reserve and the quota, and protects pinned evidence.
+- Without a measured full-frame sample the estimate is `UNMEASURED` and execution is refused.
+- Measured so far: science cutouts 4.0 MB each (n=32), ePSF 7.9 MB; no full frame has been measured yet.
