@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Example launchd agent for the HEIMDALL data worker. NOT installed by HEIMDALL. Adapt the paths, then:
+     cp deploy/com.heimdall.worker.plist ~/Library/LaunchAgents/ && launchctl load ~/Library/LaunchAgents/com.heimdall.worker.plist -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.heimdall.worker</string>
+  <key>WorkingDirectory</key><string>/path/to/HEIMDALL</string>
+  <key>ProgramArguments</key>
+  <array><string>/usr/bin/env</string><string>python3</string><string>-m</string><string>heimdall</string><string>data</string><string>worker</string></array>
+  <key>KeepAlive</key><true/>
+  <key>RunAtLoad</key><true/>
+  <key>StandardErrorPath</key><string>/tmp/heimdall-worker.log</string>
+</dict>
+</plist>

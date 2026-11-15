@@ -154,7 +154,7 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--json", action="store_true")
     s.add_argument("--quiet", action="store_true")
     s = sub.add_parser("data", help="SPHEREx data service: inventory, jobs, worker, prefetch, sync, freshness, retention")
-    s.add_argument("action", choices=["status", "freshness", "jobs", "job", "work", "prefetch", "sync", "cancel", "evict", "manifest", "resume", "index"])
+    s.add_argument("action", choices=["status", "freshness", "jobs", "job", "work", "worker", "prefetch", "sync", "cancel", "evict", "manifest", "resume", "index"])
     s.add_argument("ref", nargs="?", help="job id (job, cancel) or manifest id (manifest)")
     s.add_argument("--ra", type=float)
     s.add_argument("--dec", type=float)
@@ -163,6 +163,7 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--cutout-size", type=float)
     s.add_argument("--max-observations", type=int, default=16)
     s.add_argument("--max-seconds", type=float, default=300.0, help="work: wall-time budget for this worker run")
+    s.add_argument("--max-idle", type=float, default=30.0, help="worker: longest sleep between scheduling checks (seconds)")
     s.add_argument("--wait", type=float, default=0.0, metavar="SECONDS", help="prefetch/index: run the worker inline for at most this long")
     s.add_argument("--state", help="jobs: filter by state")
     s.add_argument("--max-age-s", type=float, help="sync: refresh regions older than this")
@@ -354,6 +355,14 @@ def _data(engine, args) -> int:
         _print({"resumed": svc.resume()}, True)
     elif args.action == "work":
         _print(svc.work(args.max_seconds), True)
+    elif args.action == "worker":  # long-running deployment mode; SIGTERM/SIGINT stop it gracefully
+        import signal
+        import threading
+        stop = threading.Event()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(sig, lambda *_: stop.set())
+        print(f"[worker] started; heartbeat at {svc.heartbeat_path}", file=sys.stderr)
+        _print(svc.serve(stop, max_idle_s=args.max_idle), True)
     elif args.action == "sync":
         _print({"queued_refresh_jobs": [j["job_id"] for j in svc.sync(max_age_s=args.max_age_s)]}, True)
     elif args.action == "evict":

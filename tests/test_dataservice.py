@@ -672,3 +672,103 @@ class EvictionRecoveryTests(Base):
         self.assertEqual(st["readiness"], "PREPARING")  # not READY with a missing file
         self.work(s)
         self.assertEqual(s.prefetch(REGION, cutout_size_deg=0.1, max_observations=2)["readiness"], "READY")
+
+
+class RecoveryAndWorkerTests(Base):
+    """Deadline ends an attempt; the request is retained and re-checked by a service-owned policy (no new user request)."""
+
+    def setUp(self):
+        super().setUp()
+        self.cfg = ServiceConfig(deadline_s=3600.0, backoff_base_s=10.0, backoff_cap_s=100.0, backoff_jitter=0.25, poll_s=1.0, lease_s=60.0,
+                                 recovery_window_s=86400.0, recovery_interval_s=7200.0, recovery_attempt_s=600.0)
+
+    def _expire(self, s):
+        self.archive.mode = "down"
+        s.ensure_index(REGION)
+        s.tick()
+        self.clock.advance(4000)
+        s.tick()
+        jid = s.jobs.list(kind=KIND_INDEX)[0]["job_id"]
+        self.assertEqual(s.jobs.get(jid)["state"], JobState.UNAVAILABLE_AFTER_DEADLINE)
+        return jid
+
+    def test_deadline_status_does_not_ask_for_resubmission_while_recovery_is_active(self):
+        s = self.svc()
+        jid = self._expire(s)
+        st = s.job_status(jid)
+        self.assertEqual(st["readiness"], "UNAVAILABLE_AFTER_DEADLINE")
+        self.assertFalse(st["must_resubmit"])
+        rec = st["job"]["auto_recovery"]
+        self.assertTrue(rec["active"])
+        self.assertIsNotNone(rec["next_check_at"])
+
+    def test_recovery_check_revives_and_completes_without_a_user_request(self):
+        s = self.svc()
+        jid = self._expire(s)
+        self.archive.mode = "ok"
+        self.clock.advance(3600)
+        s.tick()  # not yet due
+        self.assertEqual(s.jobs.get(jid)["state"], JobState.UNAVAILABLE_AFTER_DEADLINE)
+        self.clock.advance(3700)
+        s.tick()  # the worker's ordinary tick performs the due recovery check
+        self.work(s)
+        job = s.jobs.get(jid)
+        self.assertEqual(job["state"], JobState.COMPLETE)
+        self.assertEqual(job["generation"], 2)
+        reasons = [e["reason"] or "" for e in s.jobs.events(jid)]
+        self.assertTrue(any(r.startswith("automatic recovery check") for r in reasons))
+        self.assertFalse(any(r.startswith("resubmitted by a new request") for r in reasons))
+        self.assertEqual(s.ensure_index(REGION)["readiness"], "READY")
+
+    def test_failed_recovery_attempts_do_not_extend_the_window_and_expiry_requires_resubmission(self):
+        s = self.svc()
+        jid = self._expire(s)
+        until = s.jobs.recovery_info(s.jobs.get(jid))["until"]
+        for _ in range(30):  # archive stays down; recovery attempts keep hitting their short deadline
+            self.clock.advance(7300)
+            s.tick()
+            self.clock.advance(700)
+            s.tick()
+            if not s.jobs.recovery_info(s.jobs.get(jid)) or not s.jobs.recovery_info(s.jobs.get(jid))["active"]:
+                break
+        job = s.jobs.get(jid)
+        self.assertEqual(job["state"], JobState.UNAVAILABLE_AFTER_DEADLINE)
+        info = s.jobs.recovery_info(job)
+        self.assertEqual(info["until"], until)
+        self.assertFalse(info["active"])
+        self.assertTrue(s.job_status(jid)["must_resubmit"])
+        self.assertGreater(job["generation"], 1)
+        gen = job["generation"]
+        self.clock.advance(86400)
+        s.tick()
+        self.assertEqual(s.jobs.get(jid)["generation"], gen)  # no revival after the window
+
+    def test_cancelled_requests_say_must_resubmit(self):
+        s = self.svc()
+        st = s.ensure_index(REGION)
+        s.jobs.cancel(st["job"]["job_id"])
+        self.assertTrue(s.job_status(st["job"]["job_id"])["must_resubmit"])
+
+    def test_long_running_worker_resumes_interrupted_work_writes_heartbeat_and_stops(self):
+        import threading
+        s = self.svc()
+        st = s.ensure_index(REGION)
+        jid = st["job"]["job_id"]
+        s.jobs.transition(jid, JobState.DISCOVERING, reason="crashed worker", lease=True)
+        self.clock.advance(120)  # lease expired: the previous worker died mid-job
+        stop = threading.Event()
+        out = s.serve(stop, max_idle_s=0.01, max_ticks=3)
+        self.assertIn(jid, out["resumed"])
+        self.assertEqual(s.jobs.get(jid)["state"], JobState.COMPLETE)
+        hb = json.loads(s.heartbeat_path.read_text())
+        self.assertTrue(hb["stopped"])
+        self.assertGreaterEqual(hb["ticks"], 1)
+        self.assertFalse(s.worker_health()["running"])  # stopped gracefully
+        stop.set()
+        self.assertEqual(s.serve(stop, max_idle_s=0.01)["ticks"], 0)
+
+    def test_offline_process_refuses_to_act_as_worker(self):
+        import threading
+        s = self.svc(offline=True)
+        with self.assertRaises(HeimdallError):
+            s.serve(threading.Event(), max_ticks=1)

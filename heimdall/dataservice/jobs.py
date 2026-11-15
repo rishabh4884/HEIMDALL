@@ -39,7 +39,7 @@ class JobQueue:
         """Idempotent: the same (kind, payload) returns the existing active or completed job. Returns (job, created_or_revived).
 
         A job that ended in ``UNAVAILABLE_AFTER_DEADLINE`` or ``CANCELLED`` is revived (generation + 1, fresh deadline) by a *new* submission,
-        with the old history kept; the service never revives it silently on its own.
+        with the old history kept. ``UNAVAILABLE_AFTER_DEADLINE`` jobs are also revived by the recorded recovery policy (``recover_due``).
         """
         jid = self.job_id(kind, payload)
         now = self.clock()
@@ -143,6 +143,57 @@ class JobQueue:
                                    error=error, progress=progress, detail={"attempts": attempts})
         return self.transition(job["job_id"], JobState.PREPARING_DATA, reason=reason, error=error, next_attempt_at=nxt, progress=progress,
                                detail={"attempts": attempts, "retry_in_s": round(delay, 1)})
+
+    # -- service-owned recovery after a deadline -------------------------------------------------------------
+    _REQUEST_REASONS = ("submitted", "resubmitted by a new request")
+
+    def recovery_info(self, job: dict) -> dict | None:
+        """For an ``UNAVAILABLE_AFTER_DEADLINE`` job: whether the service will re-check it on its own, when, and until when.
+
+        The window starts at the first deadline reached since the last *user* (re)submission, so automatic recovery attempts that also
+        hit their deadline do not extend it."""
+        if job["state"] is not JobState.UNAVAILABLE_AFTER_DEADLINE:
+            return None
+        events = self.events(job["job_id"])
+        last_req = max((i for i, e in enumerate(events) if (e["reason"] or "").startswith(self._REQUEST_REASONS)), default=-1)
+        first = next((parse_ts(e["at"]) for e in events[last_req + 1:] if e["to_state"] == JobState.UNAVAILABLE_AFTER_DEADLINE), None)
+        first = first or parse_ts(job["updated_at"])
+        until = first + timedelta(seconds=self.cfg.recovery_window_s)
+        nxt = parse_ts(job["updated_at"]) + timedelta(seconds=self.cfg.recovery_interval_s)
+        active = self.cfg.recovery_window_s > 0 and nxt < until
+        return {"active": active, "next_check_at": now_iso(nxt) if active else None, "until": now_iso(until),
+                "policy": f"re-check every {self.cfg.recovery_interval_s:.0f} s for {self.cfg.recovery_window_s:.0f} s after the first deadline; "
+                          f"each recovery attempt has a {self.cfg.recovery_attempt_s:.0f} s deadline"}
+
+    def recover_due(self, now: datetime | None = None) -> list[str]:
+        """Revive ``UNAVAILABLE_AFTER_DEADLINE`` jobs whose low-frequency recovery check is due (generation + 1, short deadline, event logged)."""
+        now = now or self.clock()
+        revived = []
+        for j in self.list({JobState.UNAVAILABLE_AFTER_DEADLINE}):
+            info = self.recovery_info(j)
+            if not info or not info["active"] or parse_ts(info["next_check_at"]) > now:
+                continue
+            with self.db.transaction() as db:
+                cur = db.conn.execute("SELECT state FROM jobs WHERE job_id=?", (j["job_id"],)).fetchone()
+                if cur is None or cur["state"] != JobState.UNAVAILABLE_AFTER_DEADLINE:
+                    continue  # changed concurrently
+                db.conn.execute("UPDATE jobs SET state=?, generation=generation+1, updated_at=?, deadline_at=?, attempts=0, next_attempt_at=NULL, lease_until=NULL, reason=? WHERE job_id=?",
+                                (JobState.QUEUED, now_iso(now), now_iso(now + timedelta(seconds=self.cfg.recovery_attempt_s)), "automatic recovery check", j["job_id"]))
+                db.conn.execute("INSERT INTO job_events(job_id,at,from_state,to_state,reason,detail) VALUES(?,?,?,?,?,?)",
+                                (j["job_id"], now_iso(now), JobState.UNAVAILABLE_AFTER_DEADLINE, JobState.QUEUED,
+                                 "automatic recovery check (service-owned policy; no user request)", canonical({"recovery_until": info["until"]})))
+            revived.append(j["job_id"])
+        return revived
+
+    def must_resubmit(self, job: dict | None) -> bool:
+        """True only when the service will take no further action on its own and a new request is the only way to try again."""
+        if job is None:
+            return False
+        if job["state"] is JobState.CANCELLED:
+            return True
+        if job["state"] is JobState.UNAVAILABLE_AFTER_DEADLINE:
+            return not (self.recovery_info(job) or {}).get("active", False)
+        return False
 
     def cancel(self, job_id: str) -> dict:
         j = self.get(job_id)

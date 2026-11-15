@@ -4,6 +4,11 @@ Guarantee (and its limit): HEIMDALL owns acquisition, retries, provenance and ev
 not surface as a user-facing error or require resubmission. It cannot create data that has never been ingested while every upstream
 route is down; such a request stays ``PREPARING_DATA`` until the source recovers or the configured deadline gives the precise terminal
 state ``UNAVAILABLE_AFTER_DEADLINE``. A failed route is never ``NO_COVERAGE``.
+
+Deadline versus recovery: the deadline ends the *active attempt* and publishes ``UNAVAILABLE_AFTER_DEADLINE`` honestly. The request itself
+is retained: a service-owned recovery policy re-checks it at a low, capped frequency (``recovery_interval_s``) for ``recovery_window_s``
+after it first reached the deadline, without any new user request. Only after that window (or after a cancellation) does the status say
+``must_resubmit: true``.
 """
 
 from __future__ import annotations
@@ -34,7 +39,8 @@ class JobState(StrEnum):
 TERMINAL = frozenset({JobState.COMPLETE, JobState.NO_COVERAGE, JobState.UNAVAILABLE_AFTER_DEADLINE, JobState.INVALID_SOURCE_DATA,
                       JobState.CANCELLED})
 ACTIVE_RUNNING = frozenset({JobState.DISCOVERING, JobState.DOWNLOADING, JobState.VALIDATING})
-# Allowed transitions. Terminal failures may be revived only by an explicit new submission (generation + 1), never silently.
+# Allowed transitions. Terminal states are revived (generation + 1, recorded in job_events) only by a new submission or, for
+# UNAVAILABLE_AFTER_DEADLINE, by the documented service-owned recovery policy (JobQueue.recover_due); never by a silent state edit.
 TRANSITIONS: dict[JobState, frozenset[JobState]] = {
     JobState.QUEUED: frozenset({JobState.DISCOVERING, JobState.DOWNLOADING, JobState.PREPARING_DATA, JobState.CANCELLED,
                                 JobState.UNAVAILABLE_AFTER_DEADLINE, JobState.COMPLETE, JobState.NO_COVERAGE, JobState.INVALID_SOURCE_DATA}),
@@ -75,7 +81,8 @@ USER_MESSAGES = {
                          "you do not need to resubmit.",
     Readiness.NO_COVERAGE: "The archive was searched successfully and lists no matching SPHEREx observation (as of the stated index time).",
     Readiness.UNAVAILABLE_AFTER_DEADLINE: "The archive could not be reached for long enough to acquire the data within the configured deadline. "
-                                          "Nothing was concluded about the sky; the request is recorded with its full attempt history.",
+                                          "Nothing was concluded about the sky; the request is recorded with its full attempt history. "
+                                          "See auto_recovery: while it is active HEIMDALL re-checks the archive itself and you do not need to resubmit.",
     Readiness.INVALID_SOURCE_DATA: "The archive returned data that failed integrity or format validation, so it was quarantined and not used.",
     Readiness.CANCELLED: "The request was cancelled.",
 }
@@ -109,6 +116,9 @@ class ServiceConfig:
     corrupt_retries: int = 2                  # re-download attempts for a corrupt/mismatching product before quarantine
     quota_bytes: int | None = None            # soft quota for the product store; None = unlimited
     index_max_age_s: float = 7 * 86400.0      # older syncs still answer, but trigger a background refresh
+    recovery_window_s: float = 7 * 86400.0    # after a deadline, the service keeps re-checking the request for this long (0 disables)
+    recovery_interval_s: float = 6 * 3600.0   # low-frequency recovery check interval
+    recovery_attempt_s: float = 1800.0        # deadline of each automatic recovery attempt
     scope: str = SCOPE_CURRENT
 
     @classmethod
@@ -118,7 +128,10 @@ class ServiceConfig:
         return cls(deadline_s=_env_float(e, "HEIMDALL_DS_DEADLINE_S", cls.deadline_s), backoff_base_s=_env_float(e, "HEIMDALL_DS_BACKOFF_BASE_S", cls.backoff_base_s),
                    backoff_cap_s=_env_float(e, "HEIMDALL_DS_BACKOFF_CAP_S", cls.backoff_cap_s), backoff_jitter=_env_float(e, "HEIMDALL_DS_BACKOFF_JITTER", cls.backoff_jitter),
                    poll_s=_env_float(e, "HEIMDALL_DS_POLL_S", cls.poll_s), lease_s=_env_float(e, "HEIMDALL_DS_LEASE_S", cls.lease_s),
-                   quota_bytes=int(q) if q else None, index_max_age_s=_env_float(e, "HEIMDALL_DS_INDEX_MAX_AGE_S", cls.index_max_age_s))
+                   quota_bytes=int(q) if q else None, index_max_age_s=_env_float(e, "HEIMDALL_DS_INDEX_MAX_AGE_S", cls.index_max_age_s),
+                   recovery_window_s=_env_float(e, "HEIMDALL_DS_RECOVERY_WINDOW_S", cls.recovery_window_s),
+                   recovery_interval_s=_env_float(e, "HEIMDALL_DS_RECOVERY_INTERVAL_S", cls.recovery_interval_s),
+                   recovery_attempt_s=_env_float(e, "HEIMDALL_DS_RECOVERY_ATTEMPT_S", cls.recovery_attempt_s))
 
 
 @dataclass(frozen=True)

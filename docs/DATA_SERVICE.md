@@ -8,7 +8,8 @@ Code: `heimdall/dataservice/` (+ `heimdall/targets/prepare.py`). CLI: `python3 -
 A user submits an investigation **once**. HEIMDALL, not the user, owns acquisition, retries, provenance and the eventual terminal status.
 The request either (a) runs immediately from verified local data, (b) is accepted and prepared asynchronously while the service keeps
 retrying the archive, or (c) ends in a durable, precise terminal state. An archive outage does not propagate as a user-facing error and
-never requires resubmission. `must_resubmit` is always `false` in the status contract.
+does not require resubmission while the service still owns the request (see "Deadline and automatic recovery"). `must_resubmit` is `true`
+only after a cancellation, or after the automatic-recovery window of a deadline-expired request has ended.
 
 **What this does not do:** it does not eliminate the external outage. Data that were never ingested cannot be produced while *every*
 upstream route is down; such a request stays `PREPARING_DATA` (with its next scheduled attempt visible) until the archive recovers or the
@@ -56,10 +57,32 @@ QUEUED -> DISCOVERING -> DOWNLOADING <-> VALIDATING -> COMPLETE
   breaker's remaining cooldown; route switching and breakers live in the adapter; the finite deadline (`HEIMDALL_DS_DEADLINE_S`, default 6 h)
   bounds everything. A user request never runs an unbounded network loop; `--wait` runs the worker inline for at most the stated seconds.
 
+## Deadline and automatic recovery (resolves the old `must_resubmit` contradiction)
+
+Before 2026-11-15 (afternoon) a request that reached its deadline could only be restarted by a new submission, while the status still said
+`must_resubmit: false`. Now the deadline ends the *active attempt* and publishes `UNAVAILABLE_AFTER_DEADLINE` honestly, and the request is
+retained under a service-owned recovery policy (`JobQueue.recover_due`, run by every worker tick):
+
+* every `HEIMDALL_DS_RECOVERY_INTERVAL_S` (default 6 h) the job is revived (generation + 1, event `automatic recovery check (service-owned
+  policy; no user request)`) with a short deadline `HEIMDALL_DS_RECOVERY_ATTEMPT_S` (default 30 min);
+* this continues for `HEIMDALL_DS_RECOVERY_WINDOW_S` (default 7 days) after the *first* deadline since the last user submission; failed
+  recovery attempts do not extend the window; `0` disables recovery;
+* `job.auto_recovery` reports `{active, next_check_at, until, policy}`; `must_resubmit` is `false` while `active`, `true` afterwards;
+* a new submission of the same request still revives it at once (generation + 1) and starts a fresh window.
+
+## Long-running worker (deployment mode)
+
+`python3 -m heimdall data worker [--max-idle 30]` runs until SIGTERM/SIGINT: it resumes interrupted (lease-expired) jobs, runs due jobs and
+recovery checks, writes an atomic heartbeat (`<state>/dataservice/worker_heartbeat.json`: pid, time, ticks, jobs run, open jobs), sleeps until
+the next scheduled attempt (at most `--max-idle` s), and on a signal finishes the current bounded step and exits with a final `stopped: true`
+heartbeat. A hard kill is recovered by lease expiry (`HEIMDALL_DS_LEASE_S`) and `resume()` on the next start. `data status` reports
+`metrics.worker` (running, heartbeat age). Supervision examples (not installed by HEIMDALL): `deploy/heimdall-worker.service` (systemd)
+and `deploy/com.heimdall.worker.plist` (launchd). One worker per state directory: the SQLite store is single-node (see Storage).
+
 ## User-facing readiness contract (`heimdall.data_status/1.0`)
 
 `readiness` is one of `READY`, `PREPARING`, `NO_COVERAGE`, `UNAVAILABLE_AFTER_DEADLINE`, `INVALID_SOURCE_DATA`, `CANCELLED`, with a user-safe
-`message`, the `job` (state, attempts, next attempt time and seconds, last error, progress), `must_resubmit: false`, and for target
+`message`, the `job` (state, attempts, next attempt time and seconds, last error, progress, `auto_recovery`), `must_resubmit` (see above), and for target
 investigations a `status.execution` compatible with the existing result schema (`PREPARING_DATA` while preparing). Structured technical
 detail (HTTP status, route, error class) stays in `job.last_error`, the job `events`, and `data status`. A completed investigation is the
 normal `heimdall.target_investigation/1.0` result plus `data_status` and `input_manifest`.
@@ -84,7 +107,8 @@ provenance origin is `CACHED`, with the original acquisition origin/route in the
 ```
 python3 -m heimdall data prefetch --ra R --dec D --radius 0.05 [--detectors 2] --cutout-size 0.1 --max-observations 16 [--wait 300]   # explicit ingestion
 python3 -m heimdall target run NASA-01 [--wait 60]          # user request: returns the result, or a durable job id (never "retry")
-python3 -m heimdall data work --max-seconds 1700           # worker: resume interrupted jobs, run due jobs/retries until idle or budget (run from cron/systemd/k8s)
+python3 -m heimdall data worker                            # long-running worker (supervise with systemd/launchd); SIGTERM stops it gracefully
+python3 -m heimdall data work --max-seconds 1700           # bounded worker run: resume interrupted jobs, run due jobs/retries until idle or budget
 python3 -m heimdall data jobs [--state PREPARING_DATA]     # queue; `data job JOB_ID` shows state, attempts, next attempt, events
 python3 -m heimdall data sync [--max-age-s S]              # queue refresh jobs for indexed regions older than S (then run `data work`)
 python3 -m heimdall data status                            # metrics + freshness: queue depth/age, retries, route health, cache hit rate, bytes, validation failures
@@ -94,8 +118,8 @@ python3 -m heimdall data cancel JOB_ID | resume | evict [--target-bytes N] [--dr
 ```
 
 Modes: **on-demand** (a user request creates jobs), **prefetch** (`data prefetch`), **sync** (`data sync` + `data work`), **offline**
-(`HEIMDALL_OFFLINE=1`: everything from the local inventory/store; nothing touches the network). `work` is a bounded, schedulable function
-(`DataService.work`/`tick`), not a daemon: run it periodically from any scheduler. Recovery after an outage needs no operator action beyond
+(`HEIMDALL_OFFLINE=1`: everything from the local inventory/store; nothing touches the network). `worker` is the deployment mode;
+`work` is the bounded, schedulable variant (`DataService.work`/`tick`). Recovery after an outage needs no operator action beyond
 having a worker running; `data jobs --state PREPARING_DATA` shows what is waiting and when it will next be tried.
 
 ## Storage, retention, quota, scaling

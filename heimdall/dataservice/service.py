@@ -219,7 +219,7 @@ class DataService:
 
     def _status(self, readiness: Readiness, job: dict | None, extra: dict | None = None) -> dict:
         out = {"schema": STATUS_SCHEMA, "readiness": readiness.value, "message": USER_MESSAGES[readiness], "job": self.describe_job(job) if job else None,
-               "must_resubmit": False}
+               "must_resubmit": self.jobs.must_resubmit(job)}
         if readiness is Readiness.PREPARING and self.offline:
             out["message"] += " (This process is offline; a worker with archive access will acquire the data.)"
         out.update(extra or {})
@@ -231,7 +231,7 @@ class DataService:
         return {"job_id": job["job_id"], "kind": job["kind"], "state": job["state"].value, "generation": job["generation"], "attempts": job["attempts"],
                 "created_at": job["created_at"], "updated_at": job["updated_at"], "deadline_at": job["deadline_at"], "next_attempt_at": job["next_attempt_at"],
                 "next_attempt_in_s": max(0.0, (nxt - now).total_seconds()) if nxt else None, "reason": job["reason"], "progress": job["progress"],
-                "last_error": job["last_error"], "result": job["result"]}
+                "last_error": job["last_error"], "result": job["result"], "auto_recovery": self.jobs.recovery_info(job)}
 
     def job_status(self, job_id: str) -> dict:
         job = self.jobs.get(job_id)
@@ -257,6 +257,7 @@ class DataService:
             return []
         t0 = time.monotonic()
         ran = []
+        self.jobs.recover_due()  # low-frequency, service-owned re-checks of requests that reached their deadline
         for job in self.jobs.due():
             if len(ran) >= max_jobs or (max_seconds is not None and time.monotonic() - t0 > max_seconds):
                 break
@@ -284,6 +285,56 @@ class DataService:
         open_jobs = [j for j in self.jobs.list() if j["state"] not in TERMINAL]
         return {"resumed": resumed, "jobs_run": len(ran), "open_jobs": [self.describe_job(j) for j in open_jobs], "offline": self.offline,
                 "note": "open jobs continue on the next worker run; no resubmission is needed" if open_jobs else "no open jobs"}
+
+    # -- long-running worker (deployment mode) ---------------------------------------------------------------
+    @property
+    def heartbeat_path(self) -> Path:
+        return self.db.path.parent / "worker_heartbeat.json"
+
+    def _write_heartbeat(self, body: dict) -> None:
+        tmp = self.heartbeat_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(body, sort_keys=True, indent=1, default=str), encoding="utf-8")
+        tmp.replace(self.heartbeat_path)  # atomic
+
+    def worker_health(self, stale_after_s: float = 120.0) -> dict:
+        """Last heartbeat of the long-running worker (``data worker``), and whether it looks alive."""
+        try:
+            hb = json.loads(self.heartbeat_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {"running": False, "heartbeat": None, "note": "no worker heartbeat recorded; start `python3 -m heimdall data worker`"}
+        age = (self.clock() - parse_ts(hb["at"])).total_seconds()
+        return {"running": (not hb.get("stopped")) and age <= max(stale_after_s, 3 * float(hb.get("max_idle_s", 30.0))), "heartbeat_age_s": age, "heartbeat": hb}
+
+    def _next_wake(self) -> datetime | None:
+        times = [parse_ts(j["next_attempt_at"]) for j in self.jobs.list({JobState.PREPARING_DATA}) if j["next_attempt_at"]]
+        times += [parse_ts(i["next_check_at"]) for i in (self.jobs.recovery_info(j) for j in self.jobs.list({JobState.UNAVAILABLE_AFTER_DEADLINE}))
+                  if i and i["active"]]
+        return min(times, default=None)
+
+    def serve(self, stop, *, max_idle_s: float = 30.0, tick_budget_s: float = 300.0, max_ticks: int | None = None) -> dict:
+        """Run until ``stop`` (a ``threading.Event``) is set: resume interrupted work, run due jobs, recover deadline-expired requests on
+        the recorded policy, write an atomic heartbeat each loop, and sleep until the next scheduled attempt (at most ``max_idle_s``).
+        Stopping is graceful: the current job finishes its bounded step; a hard kill is recovered by lease expiry + ``resume()``."""
+        import os
+        if self.offline:
+            raise HeimdallError.of(ErrorCode.CONFIG_INVALID, "the data worker cannot run with HEIMDALL_OFFLINE set")
+        started, ticks, jobs_run = now_iso(self.clock()), 0, 0
+        resumed = self.resume()
+        def beat(stopped: bool = False) -> None:
+            jobs = self.jobs.list()
+            self._write_heartbeat({"pid": os.getpid(), "at": now_iso(self.clock()), "started_at": started, "ticks": ticks, "jobs_run": jobs_run,
+                                   "open_jobs": sum(j["state"] not in TERMINAL for j in jobs), "resumed_at_start": resumed,
+                                   "max_idle_s": max_idle_s, "stopped": stopped})
+        while not stop.is_set() and (max_ticks is None or ticks < max_ticks):
+            ran = self.tick(max_seconds=tick_budget_s)
+            ticks, jobs_run = ticks + 1, jobs_run + len(ran)
+            beat()
+            if not ran:
+                nxt = self._next_wake()
+                wait = max_idle_s if nxt is None else min(max_idle_s, max(0.2, (nxt - self.clock()).total_seconds()))
+                stop.wait(wait)
+        beat(stopped=True)
+        return {"ticks": ticks, "jobs_run": jobs_run, "resumed": resumed, "stopped_gracefully": True}
 
     def run_job(self, job_id: str, budget_s: float | None = None) -> dict:
         job = self.jobs.get(job_id)
@@ -478,7 +529,9 @@ class DataService:
                 "routes": routes, "circuit_breakers": breakers, "store": self.store.usage(),
                 "cache": {"hits": hits, "misses": misses, "hit_rate": hits / (hits + misses) if hits + misses else None},
                 "bytes_retrieved": self.db.counter("bytes_retrieved"), "validation_failures": self.db.counter("validation_failures"),
-                "quarantined_products": self.db.counter("quarantined_products"), "freshness_lag_s": fresh["max_index_age_s"]}
+                "quarantined_products": self.db.counter("quarantined_products"), "freshness_lag_s": fresh["max_index_age_s"],
+                "worker": self.worker_health(),
+                "awaiting_automatic_recovery": sum(bool((self.jobs.recovery_info(j) or {}).get("active")) for j in jobs)}
 
     def freshness(self, region: RegionSpec | None = None) -> dict:
         """What the local index represents -- never 'live', never all-sky unless proven (it cannot be: syncs are per region)."""
