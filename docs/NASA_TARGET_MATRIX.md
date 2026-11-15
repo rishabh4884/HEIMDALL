@@ -15,7 +15,9 @@ Generated from saved results by `python3 -m heimdall target matrix`. Every state
 - Blind pipeline: PARTIAL run `R20261115T063200-a11cf992`; detections near expected target 0/7
 - Detectability: {'max': 260.4878270189653, 'median': 157.0733153987506, 'n_ge_3': 6, 'n_ge_5': 6}
 - Hypotheses: Insufficient evidence [SUPPORTED]; Moving as the catalogue predicts [NOT_ASSESSABLE]; Stationary source [NOT_ASSESSABLE]; Registration or astrometric artefact [NOT_ASSESSABLE]
-- Conclusion: The selected observations do not allow a valid test for Barnard's Star. This is a measurement within stated limits, not a new finding.
+- Claims (1.3.0): forced_photometry NOT_ASSESSABLE; motion NOT_ASSESSABLE; variability NOT_ASSESSABLE
+- Quick answer (from the admissible claims): Barnard's Star: Not assessable -- Motion could not be assessed with the usable observations. Not established: distance, physical velocity, orbit or mass (angular motion only).
+- Saved conclusion text (not authoritative): The selected observations do not allow a valid test for Barnard's Star. This is a measurement within stated limits, not a new finding.
 - Reproduce: `python3 -m heimdall target run NASA-01`
 
 ## NASA-02 Epsilon Indi B (Ba/Bb brown-dwarf binary) (MOVING_OBJECT)
@@ -32,7 +34,9 @@ Generated from saved results by `python3 -m heimdall target matrix`. Every state
 - Blind pipeline: FAILED run `None`; detections near expected target None/None
 - Detectability: {'max': 193.81238645548117, 'median': 104.08317168932494, 'n_ge_3': 16, 'n_ge_5': 16}
 - Hypotheses: Known source moving as its catalogue astrometry predicts [SUPPORTED]; Stationary source (no genuine motion) [DISFAVOURED]; Apparent motion produced by registration/astrometric error [CANNOT_EXCLUDE]; Centroid dominated by a blended neighbour or unresolved companion [CANNOT_EXCLUDE]; Possibly moving uncatalogued source [DISFAVOURED]
-- Conclusion: Epsilon Indi B (Ba/Bb brown-dwarf binary) moved across the SPHEREx images by about the amount its catalogue motion predicts. This is a measurement within stated limits, not a new finding.
+- Claims (1.3.0): forced_photometry MEASUREMENT (PROVISIONAL_UNVALIDATED_METHOD); motion CONSISTENT_WITH (PROVISIONAL_UNVALIDATED_METHOD); variability INCONCLUSIVE
+- Quick answer (from the admissible claims): Epsilon Indi B (Ba/Bb brown-dwarf binary): Consistent with -- Provisional (method not validated on real data): The measured apparent motion is consistent with the catalogue proper motion. Not established: distance, physical velocity, orbit or mass (angular motion only).
+- Saved conclusion text (not authoritative): Epsilon Indi B (Ba/Bb brown-dwarf binary) moved across the SPHEREx images by about the amount its catalogue motion predicts. This is a measurement within stated limits, not a new finding.
 - Reproduce: `python3 -m heimdall target run NASA-02`
 
 ## NASA-03 WISE 0855-0714 (MOVING_OBJECT)
@@ -48,7 +52,9 @@ Generated from saved results by `python3 -m heimdall target matrix`. Every state
 - Blind pipeline: FAILED run `None`; detections near expected target None/None
 - Detectability: {'max': 5.3041358377058145, 'median': 3.408898891939401, 'n_ge_3': 8, 'n_ge_5': 2}
 - Hypotheses: Insufficient evidence [SUPPORTED]; Moving as the catalogue predicts [NOT_ASSESSABLE]; Stationary source [NOT_ASSESSABLE]; Registration or astrometric artefact [NOT_ASSESSABLE]
-- Conclusion: The selected observations do not allow a valid test for WISE 0855-0714. This is a measurement within stated limits, not a new finding.
+- Claims (1.3.0): forced_photometry MEASUREMENT (PROVISIONAL_UNVALIDATED_METHOD); motion NOT_ASSESSABLE; variability NOT_ASSESSABLE
+- Quick answer (from the admissible claims): WISE 0855-0714: Not assessable -- Motion could not be assessed with the usable observations. Not established: distance, physical velocity, orbit or mass (angular motion only).
+- Saved conclusion text (not authoritative): The selected observations do not allow a valid test for WISE 0855-0714. This is a measurement within stated limits, not a new finding.
 - Reproduce: `python3 -m heimdall target run NASA-03`
 
 ## NASA-04 RW Aurigae (VARIABLE_STAR)
@@ -63,7 +69,9 @@ Generated from saved results by `python3 -m heimdall target matrix`. Every state
 - Blind pipeline: FAILED run `None`; detections near expected target None/None
 - Detectability: {'max': 536.6883750025798, 'median': 393.85374673607316, 'n_ge_3': 12, 'n_ge_5': 12}
 - Hypotheses: Insufficient evidence [SUPPORTED]; Intrinsic variability [NOT_ASSESSABLE]; Constant source [NOT_ASSESSABLE]; Calibration or pipeline artefact [NOT_ASSESSABLE]
-- Conclusion: The selected observations do not allow a valid test for RW Aurigae. This is a measurement within stated limits, not a new finding.
+- Claims (1.3.0): forced_photometry MEASUREMENT (PROVISIONAL_UNVALIDATED_METHOD); variability NOT_ASSESSABLE
+- Quick answer (from the admissible claims): RW Aurigae: Not assessable -- No comparable series had enough points and epochs for a variability test. Not established: a period or variability class.
+- Saved conclusion text (not authoritative): The selected observations do not allow a valid test for RW Aurigae. This is a measurement within stated limits, not a new finding.
 - Reproduce: `python3 -m heimdall target run NASA-04`
 
 ## NASA-05 R Draconis (VARIABLE_STAR)
@@ -78,5 +86,7 @@ Generated from saved results by `python3 -m heimdall target matrix`. Every state
 - Blind pipeline: PARTIAL run `R20261115T053002-23b4d41f`; detections near expected target 0/10
 - Detectability: {'max': 173.53952637269074, 'median': 173.53952637269074, 'n_ge_3': 1, 'n_ge_5': 1}
 - Hypotheses: Insufficient evidence [SUPPORTED]; Intrinsic variability [NOT_ASSESSABLE]; Constant source [NOT_ASSESSABLE]; Calibration or pipeline artefact [NOT_ASSESSABLE]
-- Conclusion: The selected observations do not allow a valid test for R Draconis. This is a measurement within stated limits, not a new finding.
+- Claims (1.3.0): forced_photometry NOT_ASSESSABLE; variability NOT_ASSESSABLE
+- Quick answer (from the admissible claims): R Draconis: Not assessable -- No comparable series had enough points and epochs for a variability test. Not established: a period or variability class.
+- Saved conclusion text (not authoritative): The selected observations do not allow a valid test for R Draconis. This is a measurement within stated limits, not a new finding.
 - Reproduce: `python3 -m heimdall target run NASA-05`

@@ -8,6 +8,9 @@ Endpoints (prefix ``/api/v1``):
 
   GET  /health                         software/schema versions, offline flag, worker heartbeat
   GET  /status                         data-service metrics and index freshness
+  GET  /capabilities                   versioned capability contract (analyses, prerequisites, limits, validation state)
+  GET  /compare?a=&b=                  two target versions (tinv:) or two runs (R...): differences, conclusion changes, comparability
+  GET  /evidence/lookup?obs_id=|sha256=  reverse lookup: every version, claim, manifest and run that depends on an input
   GET  /targets                        registered NASA targets with their saved result summary
   GET  /targets/{target_id}            latest usable saved result (404 if none)
   GET  /targets/{target_id}/attempt    latest attempt (may differ from the latest usable result; 404 if none)
@@ -152,6 +155,27 @@ class Api:
         route = (method, p[0] if p else "")
         if route == ("GET", "health"):
             return 200, self.health()
+        if route == ("GET", "capabilities") and len(p) == 1:
+            from .scientist import capabilities
+            return 200, capabilities(self.engine)
+        if route == ("GET", "compare") and len(p) == 1:
+            from .scientist import compare
+            a, b = (query.get("a", [""])[0], query.get("b", [""])[0])
+            for x in (a, b):
+                if not (RE_INV.match(x) or RE_RUN.match(x)):
+                    raise ApiError(400, "INPUT_INVALID", "a and b must be tinv:<target>:<8 hex> or run ids")
+            return 200, compare(self.engine, a, b)
+        if route == ("GET", "evidence") and len(p) == 2 and p[1] == "lookup":
+            from .scientist import lookup
+            obs = query.get("obs_id", [None])[0]
+            sha = query.get("sha256", [None])[0]
+            if obs is not None and not re.match(r"^[0-9A-Za-z_]{3,64}$", obs):
+                raise ApiError(400, "INPUT_INVALID", "obs_id must be an observation identifier")
+            if sha is not None and not re.match(r"^[0-9a-f]{64}$", sha):
+                raise ApiError(400, "INPUT_INVALID", "sha256 must be 64 hex characters")
+            if not obs and not sha:
+                raise ApiError(400, "INPUT_INVALID", "give obs_id or sha256")
+            return 200, lookup(self.engine, obs_id=obs, sha256=sha)
         if route == ("GET", "status"):
             return 200, {"metrics": self.svc.metrics(), "freshness": self.svc.freshness()}
         if route == ("GET", "targets"):
@@ -286,11 +310,18 @@ class Api:
 
     def coverage(self, query: dict) -> dict:
         from .dataservice.schemas import RegionSpec
-        ra, dec, radius = _snap_cone(_ra(_num(query, "ra", -360.0, 720.0)), _num(query, "dec", -90.0, 90.0), _num(query, "radius", 1e-4, 1.0, 0.05))
-        region = RegionSpec(ra, dec, radius, _detectors(query.get("detectors", [None])[0]))
+        exact = (_ra(_num(query, "ra", -360.0, 720.0)), _num(query, "dec", -90.0, 90.0), _num(query, "radius", 1e-4, 1.0, 0.05))
+        dets = _detectors(query.get("detectors", [None])[0])
+        region = RegionSpec(*exact, dets)
+        snapped = False
+        if self.svc.inventory.covering_sync(region, self.svc.cfg.scope) is None:
+            # not indexed: snap to the grid so map panning maps to a bounded set of index jobs (the snapped cone contains the requested one)
+            region, snapped = RegionSpec(*_snap_cone(*exact), dets), True
+        ra, dec, radius = region.ra_deg, region.dec_deg, region.radius_deg
         out = self.svc.coverage(region, offset=int(_num(query, "offset", 0, 1e7, 0)), limit=int(_num(query, "limit", 1, 2000, 500)))
-        return out | {"queried_cone": {"ra_deg": ra, "dec_deg": dec, "radius_deg": radius,
-                                       "note": f"snapped to a {COVERAGE_GRID_DEG} degree grid; contains the requested cone"}}
+        return out | {"queried_cone": {"ra_deg": ra, "dec_deg": dec, "radius_deg": radius, "snapped": snapped,
+                                       "note": (f"snapped to a {COVERAGE_GRID_DEG} degree grid; contains the requested cone" if snapped
+                                                else "answered for the requested cone from an existing index")}}
 
     def jobs(self, query: dict) -> dict:
         from .dataservice.schemas import JobState

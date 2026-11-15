@@ -51,5 +51,10 @@ def build_matrix(engine) -> str:
         lines.append(f"- Detectability: {r.get('detectability', {}).get('forced_snr')}")
         hypotheses = "; ".join(f"{h['title']} [{h['status']}]" for h in r.get("hypotheses", [])) or "not run"
         lines.append("- Hypotheses: " + hypotheses)
-        lines += [f"- Conclusion: {r['conclusion']['quick_answer']}", f"- Reproduce: `{r.get('reproduce')}`", ""]
+        from .claims import build_claims
+        cl = build_claims(r)
+        lines += [f"- Claims ({cl['method_version']}): " + "; ".join(f"{c['analysis']} {c['claim_type']}" + (f" ({c['strength']})" if c.get("strength", "").startswith("PROVISIONAL") else "")
+                                                         for c in cl["claims"]),
+                  f"- Quick answer (from the admissible claims): {cl['quick_answer']}",
+                  f"- Saved conclusion text (not authoritative): {r['conclusion']['quick_answer']}", f"- Reproduce: `{r.get('reproduce')}`", ""]
     return "\n".join(lines)

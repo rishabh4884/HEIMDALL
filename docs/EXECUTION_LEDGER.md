@@ -250,6 +250,32 @@ Schedule (Asia/Kolkata): defects A–D to about 16:00; frontend contracts to abo
 Also fixed: stored products and calibrations are re-hashed when read for analysis, so a same-size corruption raises `DATA_MALFORMED`
 instead of being analysed. Full suite: 535 OK (5 live skipped).
 
+### R2-M2 — scientist-facing contracts (this commit)
+
+- Claims 1.3.0: method validation changes strength and wording. `VALIDATED_METHODS` is empty: no target method has real-data
+  validation.
+  - An unvalidated DETECTION becomes `CANDIDATE` (`downgraded_from`).
+  - Other assertive claims carry `strength: PROVISIONAL_UNVALIDATED_METHOD` and a "Provisional (method not validated on real data)"
+    statement.
+  - `quick_answer` is regenerated from the admissible headline claim; the saved text is kept as `saved_quick_answer`.
+  - `docs/NASA_TARGET_MATRIX.md` was regenerated and leads with the claim-derived answers.
+- `heimdall/scientist.py`, served by the API, the CLI and the HTTP server:
+  - `capabilities` (`heimdall.capabilities/1.0`);
+  - `compare` (`heimdall.comparison/1.0`, with a comparability verdict; `NOT_COMPARABLE` pairs give no change statement);
+  - `lookup` (`heimdall.evidence_lookup/1.0`, the reverse traversal).
+  - Routes: API `GET /capabilities`, `/compare`, `/evidence/lookup`; CLI `scientist capabilities|compare|lookup`.
+- HTTP coverage answers from the exact requested cone when it is already indexed, and snaps to the grid only when an index job is
+  needed. Before this, the snap enlarged the cone and needlessly queued a job (found by the example client).
+- `scripts/frontend_example.py` is the executable contract walk-through. It passed against a fresh state imported from bundle
+  `evb:1f137a21a94c0c43` with the server offline.
+- Real data:
+  - NASA-02 `c3c6c224` vs `0c714738` is `COMPARABLE_WITH_LIMITATIONS` (method versions differ) and shows the variability change and
+    the supersession;
+  - NASA-01 vs NASA-02 is `NOT_COMPARABLE`;
+  - the CLI and API field runs are `COMPARABLE` with an identical hash;
+  - reverse lookup of `2025W17_4B_0017_1D2` returns both NASA-02 versions and their claims.
+- Tests: full suite 543 OK (5 live skipped).
+
 ## Integration record (D-007; approved by the owner on 2026-11-15)
 
 The full individual commit history is kept; nothing is squashed. Steps and verification:

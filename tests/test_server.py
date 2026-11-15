@@ -202,3 +202,39 @@ class SocketTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ScientistApiTests(ApiTests):
+    def _save(self, tid, h, **over):
+        d = Path(self.engine.settings.state_dir) / "targets" / tid
+        d.mkdir(parents=True, exist_ok=True)
+        doc = {"investigation_id": f"tinv:{tid}:{h}", "target": {"target_id": tid, "category": "MOVING_OBJECT"}, "data_origin": "REAL",
+               "config_hash": "c1", "options": {"max_observations": 16}, "status": {"execution": "COMPLETED", "test_status": "PASSED"},
+               "analyses": {"motion": {"verdict": "NOT_ASSESSABLE", "method_version": "1.0.0-provisional"}},
+               "products": [{"obs_id": "OBS_A", "sha256": "ab" * 32, "release": "spherex_dr1", "retrieved_at": "t", "access_reference": "x"}],
+               "measurements": [{"obs_id": "OBS_A", "status": "MEASURED"}], "hypotheses": [], "conclusion": {"quick_answer": "q"}}
+        doc.update(over)
+        (d / f"{h}.json").write_text(json.dumps(doc))
+        return doc
+
+    def test_capabilities_compare_and_reverse_lookup(self):
+        caps = self.call("GET", "/api/v1/capabilities")[1]
+        self.assertEqual(caps["schema"], "heimdall.capabilities/1.0")
+        self.assertIn("field_run", [a["id"] for a in caps["analyses"]])
+        self.assertIn("period_search", [n["id"] for n in caps["not_available"]])
+        self._save("NASA-01", "0000aaaa")
+        self._save("NASA-01", "1111bbbb", options={"max_observations": 8}, analyses={"motion": {"verdict": "NO_SIGNIFICANT_MOTION", "method_version": "1.0.0-provisional"}})
+        self._save("NASA-02", "2222cccc", target={"target_id": "NASA-02", "category": "MOVING_OBJECT"})
+        c = self.call("GET", "/api/v1/compare", {"a": ["tinv:NASA-01:0000aaaa"], "b": ["tinv:NASA-01:1111bbbb"]})[1]
+        self.assertEqual(c["comparability"]["status"], "COMPARABLE")
+        self.assertEqual(c["parameters"], {"max_observations": {"a": 16, "b": 8}})
+        self.assertEqual(c["changes"]["verdicts"]["motion"], {"a": "NOT_ASSESSABLE", "b": "NO_SIGNIFICANT_MOTION"})
+        x = self.call("GET", "/api/v1/compare", {"a": ["tinv:NASA-01:0000aaaa"], "b": ["tinv:NASA-02:2222cccc"]})[1]
+        self.assertEqual((x["comparability"]["status"], x["changes"]), ("NOT_COMPARABLE", None))  # incompatible comparison excluded
+        self.assertEqual(self.err("GET", "/api/v1/compare", {"a": ["x"], "b": ["y"]}).status, 400)
+        lk = self.call("GET", "/api/v1/evidence/lookup", {"obs_id": ["OBS_A"]})[1]
+        self.assertEqual(sorted(v["investigation_id"] for v in lk["versions"]),
+                         ["tinv:NASA-01:0000aaaa", "tinv:NASA-01:1111bbbb", "tinv:NASA-02:2222cccc"])
+        self.assertEqual(self.call("GET", "/api/v1/evidence/lookup", {"sha256": ["ab" * 32]})[1]["products"][0]["obs_id"], "OBS_A")
+        for bad in ({"obs_id": ["../x"]}, {"sha256": ["zz"]}, {}):
+            self.assertEqual(self.err("GET", "/api/v1/evidence/lookup", bad).status, 400)

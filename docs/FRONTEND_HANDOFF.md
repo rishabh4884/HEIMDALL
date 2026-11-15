@@ -21,6 +21,9 @@ is given. Implementation: `heimdall/server.py` (stdlib only); tests: `tests/test
 
 | Method + path | Returns | Notes |
 |---|---|---|
+| `GET /capabilities` | `heimdall.capabilities/1.0`: analyses, entry points, prerequisites, limits, validation state, unavailable analyses with reasons | render capability-aware controls from this, not from hard-coded assumptions |
+| `GET /compare?a=&b=` | `heimdall.comparison/1.0` for two `tinv:` versions or two run ids: parameter/input/method differences, conclusion changes, `comparability.status` | `NOT_COMPARABLE` pairs return `changes: null`; show the reasons |
+| `GET /evidence/lookup?obs_id=` or `?sha256=` | `heimdall.evidence_lookup/1.0`: every version (with `superseded_by`), claim, manifest and run that depends on the input | the reverse traversal (product -> conclusions) |
 | `GET /health` | versions, `offline`, `worker {running, heartbeat_age_s, heartbeat}` | show a banner when no worker is running: jobs will not progress |
 | `GET /status` | `metrics` (queue, routes, cache, bytes, worker) + `freshness` | operator panel; `freshness.all_sky_complete` is always `false` |
 | `GET /targets` | five NASA targets + saved-result summary | |
@@ -41,6 +44,30 @@ is given. Implementation: `heimdall/server.py` (stdlib only); tests: `tests/test
 Errors: `{"schema":"heimdall.http/1.0","error":{"code","message"}}`, codes `INPUT_INVALID` (400), `UNAUTHORIZED` (401), `NOT_FOUND` (404),
 `PAYLOAD_TOO_LARGE` (413), `INTERNAL` (500, no stack trace to the client). Requests never return an archive error: an outage shows up
 as `PREPARING` with `job.next_attempt_at`.
+
+## Executable example
+
+`scripts/frontend_example.py --base http://127.0.0.1:8765/api/v1 [--alternate]` walks the whole contract and asserts it, exiting 1 on a
+violation. The walk covers:
+- health and capabilities;
+- coverage browsing;
+- target submission;
+- claims traversal (quick answer -> headline claim -> evidence -> measurements -> products);
+- reverse lookup;
+- versions and comparison, including a refused cross-target comparison;
+- the error envelope;
+- a new-data request with polling;
+- an alternate field run with a run comparison.
+
+Verified against a fresh state imported from an evidence bundle, with the server offline.
+
+Claim semantics for display (claims 1.3.0):
+- `claim_type` comes from the admissible claim state. `CANDIDATE` means a detection-shaped result from a method not validated on
+  real data.
+- `strength: PROVISIONAL_UNVALIDATED_METHOD` must be shown.
+- `quick_answer` is regenerated from the headline claim. `saved_quick_answer` is historical text and not authoritative.
+- A named target whose saved result predates the data service (no frozen manifest) answers `POST /investigations` with 202 because new
+  data must be prepared. Its saved result is always available at `GET /targets/{id}`.
 
 ## Submission flow (poll; there is no push channel)
 

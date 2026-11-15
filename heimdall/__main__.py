@@ -210,6 +210,10 @@ def _parser() -> argparse.ArgumentParser:
     s = sub.add_parser("cache", help="list or clear cached products")
     s.add_argument("action", choices=["list", "clear"])
     s.add_argument("--older-than-days", type=float)
+    s = sub.add_parser("scientist", help="capabilities, compare two versions/runs, reverse evidence lookup")
+    s.add_argument("action", choices=["capabilities", "compare", "lookup"])
+    s.add_argument("a", nargs="?", help="compare: first tinv:/run id; lookup: obs_id or sha256")
+    s.add_argument("b", nargs="?", help="compare: second tinv:/run id")
     s = sub.add_parser("evidence", help="portable evidence bundles: export saved results with their exact inputs, verify, import into fresh state")
     s.add_argument("action", choices=["export", "verify", "import"])
     s.add_argument("path", type=Path, help="bundle directory (export/import/verify) or .tar.gz (verify/import)")
@@ -233,6 +237,17 @@ def _run(args) -> int:
     from .pipeline.runner import InvestigationRequest
 
     cfg_path = getattr(args, "config", None)
+    if args.command == "scientist":
+        from .scientist import capabilities, compare, lookup
+        eng = Engine.from_environment(_env_file())
+        if args.action == "capabilities":
+            _print(capabilities(eng), True)
+        elif args.action == "compare":
+            _print(compare(eng, args.a, args.b), True)
+        else:
+            key = args.a or ""
+            _print(lookup(eng, sha256=key) if len(key) == 64 and all(c in "0123456789abcdef" for c in key) else lookup(eng, obs_id=key), True)
+        return 0
     if args.command == "evidence":
         from .config import load_settings
         from .evidence import export_bundle, import_bundle, verify_bundle

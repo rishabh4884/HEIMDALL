@@ -1,7 +1,7 @@
 """Auditable claims for a target investigation, with a defensibility gate (contract ``heimdall.claims/1.0``).
 
 Every user-visible conclusion of a target investigation is restated as an explicit claim with a precise ``claim_type``
-(MEASUREMENT, DETECTION, NON_DETECTION, UPPER_LIMIT, CONSISTENT_WITH, INCONCLUSIVE, NOT_ASSESSABLE, BLOCKED, LIMITED_BY_DATA), the measured
+(MEASUREMENT, DETECTION, CANDIDATE, NON_DETECTION, UPPER_LIMIT, CONSISTENT_WITH, INCONCLUSIVE, NOT_ASSESSABLE, BLOCKED, LIMITED_BY_DATA), the measured
 values with units and uncertainties, the method and version, links to the exact evidence (JSON paths into the result, observation ids,
 product checksums, manifest), what the claim does *not* establish, and the next discriminating step.
 
@@ -21,7 +21,7 @@ import math
 from ..pipeline.results import canonical_hash
 
 CLAIMS_SCHEMA = "heimdall.claims/1.0"
-CLAIMS_METHOD_VERSION = "1.2.0"  # 1.1.0: analysis-specific artefact gate; 1.2.0: complete expected-hypothesis accounting, evidence/provenance/uncertainty audits
+CLAIMS_METHOD_VERSION = "1.3.0"  # 1.3.0: method validation sets strength/wording; unvalidated DETECTION -> CANDIDATE; claim-derived quick answer. Earlier:  # 1.1.0: analysis-specific artefact gate; 1.2.0: complete expected-hypothesis accounting, evidence/provenance/uncertainty audits
 
 # What each analysis verdict may claim. Strength order (strongest first) is used for downgrades.
 MOTION_CLAIMS = {
@@ -144,6 +144,19 @@ def _gate(result: dict, analysis: dict | None, claim_type: str, *, uncertainty_o
     ]
 
 
+# Validation state of the methods behind claims. Only methods with real-data validation in their regime may yield unqualified claims;
+# today none has it (synthetic controls and injection tests only), see docs/VALIDATION.md and docs/PROVISIONAL.md.
+VALIDATED_METHODS: dict[str, str] = {}
+
+
+def _method_validation(claim: dict) -> str:
+    m = claim.get("method") or {}
+    key = f"{m.get('id')}@{m.get('version')}"
+    if key in VALIDATED_METHODS:
+        return "VALIDATED"
+    return "UNVALIDATED_ON_REAL_DATA"
+
+
 def _finalise(claim: dict, checks: list[dict]) -> dict:
     failed = [c["check"] for c in checks if c["required"] and not c["passed"]]
     claim["gate"] = {"checks": checks, "passed": not failed, "failed_required": failed}
@@ -151,6 +164,18 @@ def _finalise(claim: dict, checks: list[dict]) -> dict:
         claim["downgraded_from"] = claim["claim_type"]
         claim["claim_type"] = DOWNGRADE[claim["claim_type"]]
         claim["statement"] = f"Downgraded: {claim['statement']} (failed checks: {', '.join(failed)})"
+    # Validation scope changes strength and wording, not just a caveat: an unvalidated method cannot issue a detection.
+    claim["method_validation"] = _method_validation(claim) if claim.get("method") else "NOT_APPLICABLE"
+    if claim["method_validation"] == "UNVALIDATED_ON_REAL_DATA" and claim["claim_type"] in ASSERTIVE:
+        claim["strength"] = "PROVISIONAL_UNVALIDATED_METHOD"
+        if claim["claim_type"] == "DETECTION":
+            claim["downgraded_from"] = claim.get("downgraded_from") or "DETECTION"
+            claim["claim_type"] = "CANDIDATE"
+            claim["statement"] = f"Candidate (not a detection: the method is not validated on real data): {claim['statement']}"
+        else:
+            claim["statement"] = f"Provisional (method not validated on real data): {claim['statement']}"
+    else:
+        claim["strength"] = "AS_STATED" if claim["claim_type"] in ASSERTIVE else "NON_ASSERTIVE"
     claim["claim_id"] = "clm:" + canonical_hash([claim["subject"], claim["analysis"], claim.get("downgraded_from") or claim["claim_type"],
                                                   claim.get("derived_from")])[7:19]
     return claim
@@ -265,6 +290,17 @@ def _measurement_claims(result: dict, base: dict) -> list[dict]:
     return out
 
 
+def quick_answer(head: dict | None, name: str | None) -> str:
+    """User-facing one-liner derived only from the admissible claim state, so obsolete stronger wording cannot bypass a downgrade."""
+    if head is None:
+        return f"No assessable claim for {name}."
+    lead = {"DETECTION": "Detected", "CANDIDATE": "Candidate only", "CONSISTENT_WITH": "Consistent with", "NON_DETECTION": "No evidence in this dataset",
+            "MEASUREMENT": "Measured", "UPPER_LIMIT": "Upper limit", "INCONCLUSIVE": "Inconclusive", "NOT_ASSESSABLE": "Not assessable",
+            "LIMITED_BY_DATA": "Limited by data", "BLOCKED": "Blocked"}.get(head["claim_type"], head["claim_type"])
+    tail = head.get("does_not_establish") or []
+    return f"{name}: {lead} -- {head['statement']}" + (f" Not established: {tail[0]}." if tail else "")
+
+
 def build_claims(result: dict) -> dict:
     """Claims for a saved ``heimdall.target_investigation/1.0`` document (pure function)."""
     target = (result.get("target") or {}).get("target_id")
@@ -286,7 +322,9 @@ def build_claims(result: dict) -> dict:
     primary = "motion" if (result.get("target") or {}).get("category") == "MOVING_OBJECT" else "variability"
     head = next((c for c in claims if c["analysis"] == primary), next((c for c in claims if c["analysis"] == "execution"), None))
     return {"schema": CLAIMS_SCHEMA, "method_version": CLAIMS_METHOD_VERSION, "investigation_id": result.get("investigation_id"),
-            "quick_answer": (result.get("conclusion") or {}).get("quick_answer"),
+            "quick_answer": quick_answer(head, (result.get("target") or {}).get("name") or target),
+            "saved_quick_answer": (result.get("conclusion") or {}).get("quick_answer"),
+            "quick_answer_source": "regenerated from the admissible headline claim (the saved text is kept for reference and is not authoritative)",
             "headline_claim": head["claim_id"] if head else None, "claims": claims,
             "next_discriminating_steps": sorted(set(nxt))[:5],
             "traversal": "quick_answer -> headline_claim -> claims[].evidence_refs (JSON paths in the investigation) -> measurements[] -> "

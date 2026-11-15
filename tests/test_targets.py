@@ -710,8 +710,22 @@ class ReevaluationTests(unittest.TestCase):
             reevaluate_variability(self.tmp, self.cfg, "NASA-02", reason="x")
 
 
+def _validated_fixture_methods(test):
+    """Gate tests isolate the artefact/provenance gate from method validation by registering the fixture methods as validated."""
+    from unittest import mock
+    from heimdall.targets import claims
+    from heimdall.targets.variability import METHOD_VERSION
+    patcher = mock.patch.dict(claims.VALIDATED_METHODS, {"target_motion@1.0.0-provisional": "test fixture",
+                                                         f"target_variability@{METHOD_VERSION}": "test fixture"})
+    patcher.start()
+    test.addCleanup(patcher.stop)
+
+
 class ClaimTests(unittest.TestCase):
     """heimdall.claims/1.0: verdict -> claim type, the defensibility gate and its downgrades (SYNTHETIC inputs)."""
+
+    def setUp(self):
+        _validated_fixture_methods(self)
 
     def doc(self, **over):
         cfg = EngineConfig()
@@ -855,6 +869,9 @@ class ComparabilityCaveatTests(unittest.TestCase):
 class ClaimGateAuditTests(unittest.TestCase):
     """Audit defect A (2026-11-15): the artefact gate must account for every expected hypothesis; neighbouring checks must be conservative."""
 
+    def setUp(self):
+        _validated_fixture_methods(self)
+
     def motion_doc(self, verdict="MOTION_DETECTED_INCONSISTENT_WITH_CATALOGUE", reg="DISFAVOURED", blend="DISFAVOURED"):
         obs = ["O1", "O2", "O3"]
         hyps = []
@@ -919,3 +936,27 @@ class ClaimGateAuditTests(unittest.TestCase):
             self.assertIn("measurement_and_uncertainty_valid", self.motion(d)["gate"]["failed_required"], bad)
         d = self.motion_doc(); d["products"] = d["products"][:2]  # O3 used but has no product record
         self.assertIn("provenance_complete", self.motion(d)["gate"]["failed_required"])
+
+
+class ClaimValidationScopeTests(unittest.TestCase):
+    """Method validation changes claim strength and wording (no fixture method is registered as validated here)."""
+
+    def test_unvalidated_method_turns_a_detection_into_a_candidate_and_rewrites_the_quick_answer(self):
+        from heimdall.targets.claims import build_claims
+        d = ClaimGateAuditTests.motion_doc(None)
+        d["target"]["name"] = "Test star"
+        d["conclusion"] = {"quick_answer": "A NEW MOVING OBJECT WAS DISCOVERED"}  # obsolete, stronger saved wording
+        out = build_claims(d)
+        m = next(c for c in out["claims"] if c["analysis"] == "motion")
+        self.assertEqual((m["claim_type"], m["downgraded_from"], m["method_validation"]), ("CANDIDATE", "DETECTION", "UNVALIDATED_ON_REAL_DATA"))
+        self.assertTrue(m["statement"].startswith("Candidate (not a detection"))
+        self.assertTrue(out["quick_answer"].startswith("Test star: Candidate only"))
+        self.assertNotIn("DISCOVERED", out["quick_answer"])
+        self.assertEqual(out["saved_quick_answer"], "A NEW MOVING OBJECT WAS DISCOVERED")
+
+    def test_consistent_with_from_an_unvalidated_method_is_worded_provisional(self):
+        from heimdall.targets.claims import build_claims
+        d = ClaimGateAuditTests.motion_doc(None, "MOTION_DETECTED_CONSISTENT_WITH_CATALOGUE", reg="CANNOT_EXCLUDE")
+        m = next(c for c in build_claims(d)["claims"] if c["analysis"] == "motion")
+        self.assertEqual((m["claim_type"], m["strength"]), ("CONSISTENT_WITH", "PROVISIONAL_UNVALIDATED_METHOD"))
+        self.assertTrue(m["statement"].startswith("Provisional (method not validated on real data)"))
