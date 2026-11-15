@@ -20,7 +20,7 @@ requirement IDs, deferrals). The requirement-to-code-to-test-to-evidence matrix 
 |---|---|---|---|
 | M1 | Ledger/plan docs; resolve `must_resubmit` vs deadline contradiction (service-owned recovery); long-running worker with heartbeat, graceful stop, deployment examples | Spec §7: a queue that only moves when someone runs a command is not automatic; `must_resubmit:false` was untrue after a deadline | done, pushed `c4a4751` |
 | M2 | Stdlib HTTP JSON transport over `Engine` (status, targets, submit/reconnect, results, jobs, cancel, coverage from the local index) with bounded inputs | Frontend integration tonight needs a transport; none existed | done, pushed `91ee79d` |
-| M3 | Live/cached verification of the end-to-end path through the service (one real workflow; offline repeat) | DoD 3/4 | in progress (see below); fixes found by it pushed |
+| M3 | Live/cached verification of the end-to-end path through the service (one real workflow; offline repeat) | DoD 3/4 | done for the data path (crash + 502 survived, 4 real products, offline repeat); new real *measurement* blocked by the Gaia outage (last real measurement: NASA-01 06:20Z) |
 | M4 | NASA target records: honesty review of saved JSON, regenerate matrix from saved JSON only, acceptance doc | DoD 5/6 | done, pushed `05940e6` |
 | M5 | Full suite, diff review, handoff (`docs/FRONTEND_HANDOFF.md`), push | DoD 8/9 | planned |
 
@@ -87,6 +87,11 @@ Live observations (UTC, evidence `.heimdall/verification/2026-11-15-submission/`
 - 08:06:01: worker 1 (pid 89947) killed with SIGKILL mid-job (crash drill); worker 2 started 08:06:22; the in-flight INDEX job of the
   prefetch `job:prefetch:e00cff225e3a` keeps its lease until expiry and is then resumed by `resume()` (lease-based recovery).
 - 08:14:11: worker 2 stopped with SIGTERM: `stopped_gracefully: true`, final heartbeat `stopped: true`; worker 3 (pid 92286) started.
+- 08:20:54: worker 3 resumed the interrupted INDEX job on lease expiry; 08:22:53 SIA2 502 -> rescheduled; 08:24:18 COMPLETE via SIA2
+  (40 observations); 08:24:50-08:25:59 four real DR1 D2 cutouts acquired and verified; 08:25:59 prefetch READY, manifest
+  `man:d32d96d3e47d157d`; offline repeat READY with the same manifest. No resubmission at any point.
+- The coordinate investigation stays `PREPARING_DATA` (`CATALOGUE_PENDING`): Gaia is unreachable at IRSA and ESA; it is retried by the
+  job (deadline 13:53:30Z, then the recovery policy). Not a scientific result.
 - Offline HTTP smoke on the real state: `POST /investigations {"target_id":"NASA-01"}` -> 200 in 22 ms with
   `served_from: verified local data (no archive request)`, manifest `man:e8ea091b52f6041c`; `GET /coverage` (NASA-01 field) -> 368
   indexed observations (243 DR1, 125 QR3) from the local index as of 06:27:38Z.

@@ -1,5 +1,45 @@
 # Real-data verification: public SPHEREx QR2 data from IRSA (2026-10-29)
 
+## Submission-run verification (2026-11-15 afternoon, UTC; records in `.heimdall/verification/2026-11-15-submission/`)
+
+Everything below was observed on the real archive through the service. None of it is a scientific detection, and none is independently validated.
+
+- **Route health.** At 07:52 TAP timed out (45.8 s), SIA2 was OK (1.2 s), a pinned DR1 cutout returned 3,951,360 bytes of FITS (15.7 s),
+  and calibration was OK. At 08:23 TAP timed out, SIA2 returned **HTTP 502**, and product and calibration were OK
+  (`irsa_status_0823.txt`).
+- **Catalogue outage, live.** A coordinate request (RA 150.1, Dec 2.2, `VARIABLE_STAR`, 8 observations) was accepted at 07:53:30 as
+  `job:target_investigation:c03487f9482a` (exit 0, `must_resubmit: false`). Gaia was unreachable at both IRSA TAP (timeout) and ESA
+  (`gea.esac.esa.int` timed out). At 08:05:54 the job became `PREPARING_DATA` with `CATALOGUE_PENDING`, and it has retried
+  automatically since. It is never recorded as "no match" and never analysed without its control-star catalogue.
+  - This exposed a defect: the worker's inner HTTP retries held it for about 12 minutes per attempt. It is fixed in `1c0e47d` (one
+    bounded catalogue attempt per job run). At the time of writing this request has no scientific result.
+- **Crash and outage recovery, live.** The prefetch `job:prefetch:e00cff225e3a` (same field, detector 2, 0.1° cutouts, 4 observations)
+  went through these steps:
+  - Its INDEX child `job:index:2a5eca2c2276` was running when worker 1 was killed with SIGKILL at 08:06:01.
+  - Worker 2 later stopped gracefully on SIGTERM (`stopped_gracefully: true`), and worker 3 started.
+  - Worker 3 resumed the INDEX job on lease expiry at 08:20:54. The job hit an SIA2 **502** at 08:22:53 and was rescheduled
+    automatically.
+  - It completed through **SIA2** at 08:24:18 with 40 observations.
+  - The ACQUIRE job retrieved 4 genuine DR1 detector-2 cutouts through the direct product route:
+    - `2025W17_4B_0486_1D2` (`e746f094...`)
+    - `2025W47_1A_0525_3D2` (`785d7de7...`)
+    - `2026W19_2A_1077_2D2` (`e91bacc3...`)
+    - `2026W20_1A_0578_2D2` (`b7e2d916...`)
+  - The cutouts were retrieved 08:24:50–08:25:59, with 0 quarantined. The detector-2 ePSF was already stored.
+  - The prefetch completed `READY` at 08:25:59 with manifest `man:d32d96d3e47d157d` (`manifest_d32d96d3.json`). No request was
+    resubmitted at any point.
+  - Repeating it with `HEIMDALL_OFFLINE=1` returned `READY` with the same manifest from local data (`prefetch_offline_repeat.json`).
+  - These products were acquired and verified, not measured: the measurement needs the field-star catalogue, which was still
+    unavailable.
+- **Last real measurement through the service.** NASA-01 at about 06:20 today: `tinv:NASA-01:fd9680e5`, manifest
+  `man:e8ea091b52f6041c`, 10 products, 7 measured, `LIMITED_BY_DATA` because every measured image is saturation-flagged. It is
+  described in the next section.
+- **Cached/offline API.** `HEIMDALL_OFFLINE=1 python3 -m heimdall serve` with `POST /api/v1/investigations {"target_id":"NASA-01"}`
+  returned HTTP 200 in 22 ms with `served_from: verified local data (no archive request)`.
+- **NASA-02 re-evaluation.** This is a decision-rule correction (D-006), not new data. `tinv:NASA-02:0c714738` supersedes
+  `tinv:NASA-02:c3c6c224`; the old file is byte-identical (sha256 `4fa93189...`). Variability changed from
+  `VARIABILITY_DETECTED_WITH_CAVEATS` to `SIGNIFICANT_BUT_NOT_DISTINGUISHABLE_FROM_FIELD_SYSTEMATICS`. The motion result is unchanged.
+
 ## Data-service verification (2026-11-15, UTC; records in `.heimdall/verification/2026-11-15-dataservice/`)
 
 Design and guarantee: `docs/DATA_SERVICE.md`. Everything below is a real IRSA run through the service; no result is independently validated.
