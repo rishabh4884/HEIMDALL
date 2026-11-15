@@ -360,6 +360,56 @@ instead of being analysed. Full suite: 535 OK (5 live skipped).
 - Tests: full suite 565 OK (5 live skipped).
 - Worker 11 (pid 8756) runs this code.
 
+### R2 final verification and state (16:20 IST)
+
+**Tests**
+- Full suite: 565 OK; the 5 opt-in live tests skip by default.
+- Opt-in live tests (`HEIMDALL_REAL_DATA_TESTS=1`, 16:20 IST): 5 ran, 3 passed, 1 failed, 1 error.
+  - Failure: the Gaia cone status was FAILED (Gaia unreachable).
+  - Error: IRSA discovery returned HTTP 502 on both routes (`RETRIEVAL_FAILED`, the correct item-level code).
+  - Evidence: `live_optin_tests.txt`.
+- The owner's earlier independent live run (2 pass, 2 fail, 1 error) is recorded above and was not re-run separately.
+
+**Live routes today** (UTC)
+- 07:52: SIA2 OK, TAP down.
+- 08:23: SIA2 502.
+- 10:18–10:24: SIA2 and TAP 502, product and calibration OK.
+- 10:27: Gaia@IRSA 502, Gaia@ESA timeout, CatWISE 502, JPL OK.
+- Product retrieval worked throughout: 4 new genuine products at 10:34.
+
+**Fresh-state verification**
+- Bundle `evb:a276264a927932f8`: 122 files, 109 MB, 23 products, 4 manifests, 2 runs. Stored at
+  `.heimdall/bundles/heimdall-evidence-evb_a276264a927932f8.tar.gz` (git-ignored; SHA-256 in the `.sha256` file).
+- `scripts/demo_submission.sh --bundle <it>`: exit 0, network disabled.
+- `scripts/frontend_example.py --alternate` against a fresh imported state: all checks passed.
+- Acceptance record: `docs/ACCEPTANCE_DEMONSTRATIONS.md`.
+
+**Active worker and jobs (safe lifecycle)**
+- Worker pid 8756 (`python3 -m heimdall data worker --max-idle 10`). It holds `.heimdall/state/dataservice/worker.lock`. Stop it with
+  `kill -TERM 8756`; open jobs resume on the next worker start.
+- `job:target_investigation:c03487f9482a`: coordinate RA 150.1, Dec 2.2. It is narrowed (catalogue outage) and waits on
+  `job:index:77e5ad7b5665`, which waits on IRSA discovery. The original deadline is 13:53:30Z, followed by recovery every 6 h for 7 days.
+- Four all-sky pilot INDEX jobs (`T2:148,152,0,4`), retrying under the discovery outage. Advance and fold them in with
+  `python3 -m heimdall inventory step --tile-deg 2 --domain 148,152,0,4`.
+- A follow-up action was persisted only in test fixtures; no real follow-up was submitted.
+- Inspect read-only with `python3 -m heimdall data jobs` and `python3 -m heimdall data status`.
+
+**Remaining gaps**
+
+| Gap | Missing element | User-visible effect | Next action |
+|---|---|---|---|
+| All-sky inventory not populated | external access + resources (sustained IRSA discovery) | `all_sky_complete` false; coverage only for indexed regions | `inventory plan --tile-deg 2` then repeated `inventory step` with a running worker while SIA2 is up |
+| Full-frame mirror | data (no measured full-frame size) + resources | `mirror-plan` estimate `UNMEASURED`, execution refused | prefetch one full frame (`data prefetch` without `--cutout-size`, `--max-observations 1`), then plan |
+| Moving-object recovery weakness | validation + code (per-stage counters) | Planet X region status stays `NOT_ASSESSABLE`; motion candidates provisional | see R2-M5 entry |
+| Per-detector scientific validation | validation + calibration | every claim `PROVISIONAL_UNVALIDATED_METHOD` | real-image injection/recovery per detector |
+| Period search, thermal or physical parameters, detector stacking | code + calibration (model grids, cross-detector calibration) | reported `NOT_ASSESSABLE` / `NOT_AVAILABLE` in `/capabilities` | docs/THERMAL_REFERENCE_FEASIBILITY.md |
+| Morphology / deblending | code + validation | spatial dimension descriptive only; blend hypotheses stay `CANNOT_EXCLUDE` | validated deblending method |
+| Automated follow-up beyond re-acquisition | code | deblending and larger control samples listed as unavailable | expose `cutout_size_deg` alternates as follow-up actions |
+| Push progress channel | integration | frontend polls | SSE/WebSocket over the job events |
+| Multi-worker / multi-node | resources + code (PostgreSQL) | one worker per state directory | DATA_SERVICE migration path |
+| NASA-02..05 frozen manifests | data (TAP-era runs) | `POST` for them needs data (202); saved results remain readable | rerun through the service when discovery is up |
+| Coordinate investigation 150.1/2.2 | external access | result pending | completes automatically when discovery recovers |
+
 ## Integration record (D-007; approved by the owner on 2026-11-15)
 
 The full individual commit history is kept; nothing is squashed. Steps and verification:

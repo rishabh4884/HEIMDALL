@@ -58,7 +58,9 @@ print("served from:", r["data_status"])
 print("manifest:", m.get("manifest_id"), "| products:", len(m.get("products", [])), "| calibrations:", len(m.get("calibrations", [])))
 for p in (m.get("products") or [])[:3]:
     print("  ", p.get("obs_id"), p.get("release"), p.get("route"), p.get("retrieved_at"), (p.get("sha256") or "")[:16])
-print("quick answer:", r["conclusion"]["quick_answer"])'
+print("saved conclusion text (not authoritative):", r["conclusion"]["quick_answer"])
+from heimdall.targets.claims import build_claims
+print("quick answer from the admissible claims:", build_claims(r)["quick_answer"])'
 
 echo "== 3. NASA-02 version history (decision-rule correction kept as a linked version)"
 python3 -m heimdall target show NASA-02 | python3 -c '
