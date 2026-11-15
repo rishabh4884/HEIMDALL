@@ -11,6 +11,7 @@ Endpoints (prefix ``/api/v1``):
   GET  /targets                        registered NASA targets with their saved result summary
   GET  /targets/{target_id}            latest usable saved result (404 if none)
   GET  /targets/{target_id}/attempt    latest attempt (may differ from the latest usable result; 404 if none)
+  GET  /targets/{target_id}/versions   every saved version (newest first) with supersession links
   GET  /investigations/{investigation_id}   an immutable saved investigation version
   GET  /coverage?ra&dec&radius[&detectors][&offset][&limit]   observations from the local index, or an INDEX job
   POST /investigations                 {"target_id": "NASA-01"} or {"ra":..,"dec":..,"category":..}, optional "options"
@@ -137,6 +138,8 @@ class Api:
                 return 200, self._read_json(self.targets_dir / tid / "latest.json", f"no saved investigation for {tid}")
             if len(p) == 3 and p[2] == "attempt":
                 return 200, self._read_json(self.targets_dir / tid / "latest_attempt.json", f"no recorded attempt for {tid}")
+            if len(p) == 3 and p[2] == "versions":
+                return 200, self.versions(tid)
         if route == ("GET", "investigations") and len(p) == 2:
             m = RE_INV.match(p[1])
             if not m:
@@ -200,6 +203,28 @@ class Api:
         if "investigation_id" in res:
             return 200, res
         return 202, res
+
+    def versions(self, tid: str) -> dict:
+        """Every saved immutable version of a target investigation, newest first, with supersession links (bounded to 200)."""
+        d = self.targets_dir / tid
+        if not d.is_dir():
+            raise ApiError(404, "NOT_FOUND", f"no saved investigation for {tid}")
+        latest = self._read_json(d / "latest.json", "none").get("investigation_id") if (d / "latest.json").is_file() else None
+        attempt = self._read_json(d / "latest_attempt.json", "none").get("investigation_id") if (d / "latest_attempt.json").is_file() else None
+        out = []
+        for f in sorted(d.glob("*.json")):
+            if f.name in ("latest.json", "latest_attempt.json") or not re.match(r"^[0-9a-f]{8}\.json$", f.name):
+                continue
+            doc = self._read_json(f, "missing")
+            sup = doc.get("supersedes") or {}
+            out.append({"investigation_id": doc.get("investigation_id"), "created_at": doc.get("created_at"), "status": doc.get("status"),
+                        "supersedes": sup.get("investigation_id"), "supersession_reason": sup.get("reason"),
+                        "is_latest_usable": doc.get("investigation_id") == latest, "is_latest_attempt": doc.get("investigation_id") == attempt})
+        out.sort(key=lambda v: v["created_at"] or "", reverse=True)
+        superseded = {v["supersedes"]: v["investigation_id"] for v in out if v["supersedes"]}
+        for v in out:
+            v["superseded_by"] = superseded.get(v["investigation_id"])
+        return {"target_id": tid, "latest_usable": latest, "latest_attempt": attempt, "versions": out[:200]}
 
     def coverage(self, query: dict) -> dict:
         from .dataservice.schemas import RegionSpec

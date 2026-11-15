@@ -92,7 +92,8 @@ normal `heimdall.target_investigation/1.0` result plus `data_status` and `input_
 * Offline process (`HEIMDALL_OFFLINE=1`): same contract; the job waits `QUEUED` for a worker with archive access.
 * A stale index (older than `HEIMDALL_DS_INDEX_MAX_AGE_S`, default 7 days) still answers immediately and queues a background refresh job.
 * Catalogue references (Gaia/CatWISE) and the Gaia field-star query are cached by their own services; an uncached one makes the request
-  wait for a worker (it is never silently skipped). JPL/other context is read from cache offline and recorded as unavailable if absent.
+  wait for a worker (it is never silently skipped). A worker makes one bounded catalogue attempt per job run (no inner HTTP retries,
+  30 s timeout); on failure the job is `PREPARING_DATA` with `last_error.code = CATALOGUE_PENDING` and the job's backoff owns the retries. JPL/other context is read from cache offline and recorded as unavailable if absent.
 
 ## Freshness and completeness
 

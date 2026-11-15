@@ -89,6 +89,16 @@ class ApiTests(unittest.TestCase):
         (d / "deadbeef.json").write_text(json.dumps(doc))  # file name and id disagree -> not served under the wrong id
         self.assertEqual(self.err("GET", "/api/v1/investigations/tinv:NASA-01:deadbeef").status, 404)
         self.assertEqual(self.err("GET", "/api/v1/targets/NASA-01/attempt").status, 404)
+        newer = {"investigation_id": "tinv:NASA-01:1111beef", "created_at": "2026-11-15T09:00:00+00:00", "status": {"execution": "COMPLETED"},
+                 "supersedes": {"investigation_id": "tinv:NASA-01:0123abcd", "reason": "rule fix"}}
+        (d / "1111beef.json").write_text(json.dumps(newer))
+        (d / "latest.json").write_text(json.dumps(newer))
+        v = self.call("GET", "/api/v1/targets/NASA-01/versions")[1]
+        self.assertEqual(v["latest_usable"], "tinv:NASA-01:1111beef")
+        self.assertEqual(v["versions"][0]["investigation_id"], "tinv:NASA-01:1111beef")
+        old = next(x for x in v["versions"] if x["investigation_id"] == "tinv:NASA-01:0123abcd")
+        self.assertEqual(old["superseded_by"], "tinv:NASA-01:1111beef")
+        self.assertEqual(self.err("GET", "/api/v1/targets/NASA-03/versions").status, 404)
         for bad in ("/api/v1/targets/..", "/api/v1/jobs/job;drop", "/api/v1/manifests/x", "/api/v1/targets/NASA-01%2F..%2F..%2Fx"):
             self.assertEqual(self.err("GET", bad).status, 400, bad)
         self.assertIn(self.err("GET", "/api/v1/investigations/tinv:NASA-01:../../x").status, (400, 404))  # rejected, never read
