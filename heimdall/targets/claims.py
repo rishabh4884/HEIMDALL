@@ -19,7 +19,7 @@ from __future__ import annotations
 from ..pipeline.results import canonical_hash
 
 CLAIMS_SCHEMA = "heimdall.claims/1.0"
-CLAIMS_METHOD_VERSION = "1.0.0"
+CLAIMS_METHOD_VERSION = "1.1.0"  # 1.1.0: analysis-specific, status-aware artefact gate; real uncertainty check
 
 # What each analysis verdict may claim. Strength order (strongest first) is used for downgrades.
 MOTION_CLAIMS = {
@@ -56,11 +56,35 @@ def _products_complete(result: dict) -> tuple[bool, str]:
                            else f"{len(missing)} products lack checksum/release/retrieval time/access reference")
 
 
-def _gate(result: dict, analysis: dict | None, claim_type: str, *, uncertainty_ok: bool, comparability: tuple[bool, str], dependency: tuple[bool, str]) -> list[dict]:
+# Artefact / ordinary-explanation hypotheses that bear on each analysis (slugs from targets/hypotheses.py).
+ARTEFACT_SLUGS = {"motion": ("registration_artifact", "blend_confusion", "unresolved_companion"),
+                  "variability": ("calibration_artifact", "blend_contamination")}
+UNRESOLVED = {"SUPPORTED", "CANNOT_EXCLUDE", "NOT_ASSESSABLE", "CONSISTENT"}
+
+
+def _artefact_check(result: dict, analysis_name: str, claim_type: str) -> dict:
+    """Required for assertive claims: the analysis' own artefact hypotheses must be recorded; none may be SUPPORTED; a DETECTION additionally
+    needs every one of them excluded (a CONSISTENT_WITH claim, by definition, allows unexcluded alternatives)."""
+    if analysis_name not in ARTEFACT_SLUGS:  # per-image measurements/limits: quality flags and saturation are recorded per image instead
+        return _check("artefact_and_ordinary_explanations_visible", True, "per-image quantity; flags, saturation and contamination recorded per image")
+    slugs = ARTEFACT_SLUGS[analysis_name]
+    hyps = [h for h in result.get("hypotheses") or [] if h.get("slug") in slugs]
+    states = {h["slug"]: h.get("status") for h in hyps}
+    if claim_type not in ASSERTIVE:
+        return _check("artefact_and_ordinary_explanations_visible", True, f"non-assertive claim; recorded: {states or 'none'}")
+    if not hyps:
+        return _check("artefact_and_ordinary_explanations_visible", False, f"no artefact hypothesis recorded for the {analysis_name} analysis")
+    supported = [k for k, v in states.items() if v == "SUPPORTED"]
+    open_ = [k for k, v in states.items() if v in UNRESOLVED]
+    ok = not supported and (claim_type != "DETECTION" or not open_)
+    return _check("artefact_and_ordinary_explanations_visible", ok, f"{analysis_name} artefact hypotheses {states}"
+                  + ("; an artefact explanation is supported" if supported else "; not excluded, so a detection is not claimed" if not ok else ""))
+
+
+def _gate(result: dict, analysis: dict | None, claim_type: str, *, uncertainty_ok: bool, comparability: tuple[bool, str], dependency: tuple[bool, str],
+          analysis_name: str = "") -> list[dict]:
     synthetic = result.get("data_origin") != "REAL"
     prov_ok, prov_detail = _products_complete(result)
-    hyps = result.get("hypotheses") or []
-    artefact = [h for h in hyps if any(k in (h.get("slug") or "") for k in ("artifact", "artefact", "blend", "calibration", "registration"))]
     mv = (analysis or {}).get("method_version") or ""
     man = (result.get("input_manifest") or {}).get("manifest_id")
     return [
@@ -68,8 +92,7 @@ def _gate(result: dict, analysis: dict | None, claim_type: str, *, uncertainty_o
         _check("measurement_and_uncertainty_valid", uncertainty_ok, "values carry uncertainties or a stated reason they are unavailable"
                if uncertainty_ok else "a numerical claim lacks an uncertainty"),
         _check("comparability_and_quality_gates", comparability[0], comparability[1]),
-        _check("artefact_and_ordinary_explanations_visible", bool(artefact) or claim_type not in ASSERTIVE,
-               f"{len(artefact)} artefact/ordinary-explanation hypotheses with recorded status" if artefact else "no artefact hypothesis recorded"),
+        _artefact_check(result, analysis_name, claim_type),
         _check("validation_scope_not_overstated", True, f"method {analysis.get('method_id') if analysis else '-'} {mv or '-'}: "
                + ("provisional method, unvalidated on real data; the claim is worded accordingly" if "provisional" in mv else "method version recorded"),
                required=False),
@@ -121,7 +144,7 @@ def _motion_claim(result: dict, m: dict, base: dict) -> dict:
                     "does_not_establish": ["distance, physical velocity, orbit or mass (angular motion only)",
                                            "that the source is newly discovered or unusual"] + (["that registration error or a blended companion is excluded"]
                                                                                                if ctype in ASSERTIVE else [])}
-    checks = _gate(result, m, ctype, uncertainty_ok=unc_ok, comparability=comp,
+    checks = _gate(result, m, ctype, uncertainty_ok=unc_ok, comparability=comp, analysis_name="motion",
                    dependency=(True, f"motion evidence counted once per dependency group: {groups}" if groups else "no motion evidence items"))
     return _finalise(claim, checks)
 
@@ -155,7 +178,7 @@ def _variability_claim(result: dict, v: dict, base: dict) -> dict:
                     "does_not_establish": ["a period or variability class", "that the source is constant (a non-detection is sensitivity-limited)"
                                            if ctype == "NON_DETECTION" else "a physical cause of any flux change"]}
     unc_ok = all(s["test"].get("chi2") is not None for s in completed)
-    checks = _gate(result, v, ctype, uncertainty_ok=unc_ok, comparability=comp,
+    checks = _gate(result, v, ctype, uncertainty_ok=unc_ok, comparability=comp, analysis_name="variability",
                    dependency=(True, "one claim from the strongest series; other series are not added as independent confirmations"))
     return _finalise(claim, checks)
 
@@ -164,32 +187,35 @@ def _measurement_claims(result: dict, base: dict) -> list[dict]:
     meas = [m for m in result.get("measurements") or [] if m.get("status") == "MEASURED" and m.get("forced")]
     out = []
     if meas:
-        usable = [m for m in meas if (m["forced"].get("status") == "MEASURED" and m["forced"].get("flux_sigma_ujy"))]
-        sat = sum(1 for m in meas if m.get("saturation_risk"))
+        usable = [m for m in meas if (m["forced"].get("status") == "MEASURED" and m["forced"].get("flux_ujy") is not None and m["forced"].get("flux_sigma_ujy"))]
+        unusable = [{"obs_id": m["obs_id"], "reasons": list(m["forced"].get("reasons") or ["NO_VALID_FLUX_OR_UNCERTAINTY"])} for m in meas if m not in usable]
+        sat = sum(1 for m in usable if m.get("saturation_risk"))
         claim = base | {"analysis": "forced_photometry", "claim_type": "MEASUREMENT",
-                        "statement": f"Forced photometry at the expected position in {len(meas)} image(s); {sat} are saturation/non-linearity flagged. "
-                                     "A forced flux is a measurement at a position, not a detection.",
+                        "statement": f"Forced photometry at the expected position in {len(usable)} image(s) with a valid flux and uncertainty "
+                                     f"({len(unusable)} more without one, listed as excluded); {sat} are saturation/non-linearity flagged. "
+                                     "A forced flux is a measurement at a position, not a detection.", "excluded": unusable,
                         "values": [{"name": "forced_flux", "obs_id": m["obs_id"], "value": m["forced"].get("flux_ujy"), "sigma": m["forced"].get("flux_sigma_ujy"),
                                     "unit": "microJansky", "wavelength_um": m["forced"].get("wavelength_um"), "mjd": m.get("mjd"),
-                                    "saturation_flagged": bool(m.get("saturation_risk")), "origin": "MEASURED"} for m in meas],
+                                    "saturation_flagged": bool(m.get("saturation_risk")), "origin": "MEASURED"} for m in usable],
                         "method": {"id": "forced_photometry", "version": result.get("methods_version")},
-                        "evidence_refs": ["measurements"], "observations_used": [m["obs_id"] for m in meas], "n_usable": len(usable),
+                        "evidence_refs": ["measurements"], "observations_used": [m["obs_id"] for m in usable], "n_usable": len(usable),
                         "assumptions": ["position from catalogue propagation or the user coordinate", "ePSF or fallback PSF as recorded per image"],
                         "does_not_establish": ["that a source is detected at this position", "absolute calibration beyond the archive's units"]}
         checks = _gate(result, {"method_id": "forced_photometry", "method_version": "provisional"}, "MEASUREMENT",
-                       uncertainty_ok=all(m["forced"].get("flux_sigma_ujy") is not None for m in usable), comparability=(True, "per-image measurement; no comparison"),
+                       uncertainty_ok=bool(usable), comparability=(True, "per-image measurement; no comparison"),
                        dependency=(True, "one measurement per image"))
         out.append(_finalise(claim, checks))
-    lims = (result.get("analyses", {}).get("variability") or {}).get("upper_limits") or []
+    var = (result.get("analyses") or {}).get("variability") or {}
+    lims = var.get("upper_limits") or []
     if lims:
         claim = base | {"analysis": "upper_limits", "claim_type": "UPPER_LIMIT",
                         "statement": f"{len(lims)} image(s) give 3-sigma upper limits (flux below the 3-sigma threshold); a limit is not zero flux.",
                         "values": [{"name": "upper_limit_3sigma", "obs_id": u["obs_id"], "value": u["upper_limit_3sigma_ujy"], "unit": "microJansky",
                                     "measured": u.get("measured_flux_ujy"), "sigma": u.get("sigma_ujy"), "origin": "MEASURED"} for u in lims],
-                        "method": {"id": "censoring", "version": (result["analyses"]["variability"]).get("method_version")},
+                        "method": {"id": "censoring", "version": var.get("method_version")},
                         "evidence_refs": ["analyses.variability.upper_limits"], "observations_used": [u["obs_id"] for u in lims],
                         "does_not_establish": ["that the source is absent"]}
-        checks = _gate(result, result["analyses"]["variability"], "UPPER_LIMIT", uncertainty_ok=True, comparability=(True, "per-image limit"),
+        checks = _gate(result, var, "UPPER_LIMIT", uncertainty_ok=True, comparability=(True, "per-image limit"),
                        dependency=(True, "one limit per image"))
         out.append(_finalise(claim, checks))
     return out

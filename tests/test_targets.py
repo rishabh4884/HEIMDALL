@@ -771,6 +771,39 @@ class ClaimTests(unittest.TestCase):
         v = self.claim(build_claims(self.doc(measurements=ms, analyses={"variability": analyse_variability(ms, cfg)})), "variability")
         self.assertEqual(v["claim_type"], "INCONCLUSIVE")
 
+    def test_detection_needs_its_own_artefact_hypotheses_excluded(self):
+        from heimdall.targets.claims import build_claims
+        d = self.doc()
+        d["analyses"]["variability"]["verdict"] = "VARIABILITY_DETECTED"  # emulate a detection verdict
+        v = self.claim(build_claims(d), "variability")  # calibration_artifact is CANNOT_EXCLUDE in self.doc()
+        self.assertEqual((v["claim_type"], v["downgraded_from"]), ("INCONCLUSIVE", "DETECTION"))
+        d["hypotheses"][0]["status"] = "DISFAVOURED"
+        self.assertEqual(self.claim(build_claims(d), "variability")["claim_type"], "DETECTION")
+        d["hypotheses"] = [{"slug": "registration_artifact", "status": "DISFAVOURED"}]  # a motion hypothesis does not cover variability
+        self.assertEqual(self.claim(build_claims(d), "variability")["claim_type"], "INCONCLUSIVE")
+
+    def test_supported_artefact_downgrades_a_consistent_with_claim(self):
+        from heimdall.targets.claims import build_claims
+        d = self.doc()
+        d["analyses"]["variability"]["verdict"] = "VARIABILITY_DETECTED_WITH_CAVEATS"
+        d["hypotheses"][0]["status"] = "SUPPORTED"
+        self.assertEqual(self.claim(build_claims(d), "variability")["claim_type"], "INCONCLUSIVE")
+
+    def test_unusable_forced_photometry_is_not_a_measurement_claim(self):
+        from heimdall.targets.claims import build_claims
+        d = self.doc()
+        for m in d["measurements"]:
+            m["forced"]["status"], m["forced"]["reasons"] = "UNUSABLE", ["MASKED_FRACTION_EXCEEDS_LIMIT"]
+        c = self.claim(build_claims(d), "forced_photometry")
+        self.assertEqual(c["claim_type"], "NOT_ASSESSABLE")
+        self.assertEqual(c["values"], [])
+        self.assertEqual(c["excluded"][0]["reasons"], ["MASKED_FRACTION_EXCEEDS_LIMIT"])
+
+    def test_missing_analyses_do_not_crash(self):
+        from heimdall.targets.claims import build_claims
+        out = build_claims(self.doc(analyses=None))
+        self.assertTrue(all(c["analysis"] in ("forced_photometry", "upper_limits") for c in out["claims"]))
+
 
 class ComparabilityTests(unittest.TestCase):
     """First-class comparison records on comparable series (SYNTHETIC measurements)."""
@@ -801,4 +834,17 @@ class ComparabilityTests(unittest.TestCase):
             self.assertIn(out["verdict"], ("VARIABILITY_DETECTED", "VARIABILITY_DETECTED_WITH_CAVEATS", "NO_SIGNIFICANT_VARIABILITY",
                                            "SIGNIFICANT_BUT_NOT_DISTINGUISHABLE_FROM_FIELD_SYSTEMATICS"))
             self.assertEqual(sum(out["comparability_summary"].values()), len(out["series"]))
+
+
+class ComparabilityCaveatTests(unittest.TestCase):
+    def test_comparison_limitations_become_verdict_caveats_and_sampling_follows_the_configuration(self):
+        import dataclasses
+        cfg = EngineConfig()
+        ms = series_measurements([2000, 3500, 2000, 3600, 2100], n_controls=12)
+        out = analyse_variability(ms, cfg)  # synthetic measurements carry no registration record -> limitation
+        self.assertTrue(any("comparable only with limitations" in c and "registration" in c for c in out["caveats"]))
+        self.assertNotEqual(out["verdict"], "VARIABILITY_DETECTED")
+        loose = dataclasses.replace(cfg, temporal=dataclasses.replace(cfg.temporal, min_points_variability=2))
+        two = analyse_variability(series_measurements([2000], n_controls=12), loose)  # 2 points, 1 epoch: still not comparable (epochs)
+        self.assertTrue(all(not s["comparability"]["change_significance_allowed"] for s in two["series"]))
 

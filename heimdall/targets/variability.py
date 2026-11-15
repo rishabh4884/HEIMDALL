@@ -36,7 +36,7 @@ MIN_EPOCHS_FOR_TREND = 3
 MIN_EPOCHS_FOR_PERIOD = 6  # and a baseline of at least two cycles of any candidate period
 CONTAMINATION_RATIO_LIMIT = 0.1
 MIN_CONTROL_SERIES = 5  # completed control series needed before an empirical false-alarm fraction is computed
-METHOD_VERSION = "1.2.0-provisional"  # 1.2.0: per-series comparison records (no verdict change)
+METHOD_VERSION = "1.3.0-provisional"  # 1.2.0: comparison records; 1.3.0: their limitations are verdict caveats (D-008)
 
 
 def _point(m: dict, epoch_of: dict[str, int], gaia: str | None = None) -> tuple[SeriesPoint | None, dict | None]:
@@ -85,7 +85,8 @@ def _series_summary(s: ComparableSeries, r: VariabilityResult | None, scale: flo
 PSF_FWHM_SPREAD_LIMIT = 0.2  # fractional spread of PSF FWHM within a series above which PSF treatment is a stated limitation
 
 
-def series_comparability(s: ComparableSeries, meas_by_obs: dict[str, dict], err: dict, tolerance_fraction: float) -> dict:
+def series_comparability(s: ComparableSeries, meas_by_obs: dict[str, dict], err: dict, tolerance_fraction: float,
+                         min_points: int = 3, min_epochs: int = 2) -> dict:
     """First-class comparison record for one comparable series: ``COMPARABLE``, ``COMPARABLE_WITH_LIMITATIONS`` or ``NOT_COMPARABLE``.
 
     Each dimension is recorded with its evidence. ``NOT_COMPARABLE`` (fewer than 3 points or 2 epochs) means no change significance may be
@@ -99,8 +100,8 @@ def series_comparability(s: ComparableSeries, meas_by_obs: dict[str, dict], err:
     blends = [c for m in ms for c in m.get("contamination") or [] if c.get("optical_flux_ratio_to_target", 0) >= CONTAMINATION_RATIO_LIMIT]
     flagged = [p.obs_id for p in s.points if p.peak_flags]
     dims = [
-        dim("sampling", "OK" if len(s.points) >= 3 and s.n_epochs >= 2 else "NOT_COMPARABLE",
-            f"{len(s.points)} points over {s.n_epochs} epochs (minimum 3 points, 2 epochs)"),
+        dim("sampling", "OK" if sum(p.usable for p in s.points) >= min_points and s.n_epochs >= min_epochs else "NOT_COMPARABLE",
+            f"{sum(p.usable for p in s.points)} usable points over {s.n_epochs} epochs (minimum {min_points} points, {min_epochs} epochs)"),
         dim("passband", "OK", f"single detector {s.detector}, release {s.release}; wavelength span {s.wavelength_span_um:.4f} um within "
             f"{tolerance_fraction} x bandwidth ({s.tolerance_um:.4f} um)"),
         dim("processing_versions", "OK" if len(s.pipeline_versions) <= 1 else "LIMITATION", f"pipeline versions {s.pipeline_versions}"),
@@ -190,7 +191,8 @@ def analyse_variability(measurements: list[dict], cfg: EngineConfig, *, extra_ca
         r = variability_test(s, cfg.temporal)
         results.append(r)
         d = _series_summary(s, r, scale)
-        d["comparability"] = series_comparability(s, meas_by_obs, err, cfg.temporal.wavelength_tolerance_fraction)
+        d["comparability"] = series_comparability(s, meas_by_obs, err, cfg.temporal.wavelength_tolerance_fraction,
+                                                  cfg.temporal.min_points_variability, cfg.temporal.min_epochs_variability)
         if r.status == "COMPLETED" and r.dof and len(ctl_ratio) >= MIN_CONTROL_SERIES:
             d["test"]["empirical_false_alarm_fraction"] = float(np.mean(ctl_ratio >= r.chi2 / r.dof))
             d["test"]["n_control_series"] = int(len(ctl_ratio))
@@ -227,6 +229,12 @@ def analyse_variability(measurements: list[dict], cfg: EngineConfig, *, extra_ca
         caveats.append("single detector in the usable measurements (no cross-detector calibration check)")
     if err["status"] != "COMPLETED":
         caveats.append(f"field error scale not estimated ({err.get('reason')}); formal flux errors used")
+    # Comparison-record limitations of the series that enter the verdict are caveats too (1.3.0); dimensions already stated above are not repeated.
+    stated = {"processing_versions", "noise_model", "blending"}
+    for d in completed:
+        extra = [x for x in d["comparability"]["limitations"] if x not in stated]
+        if extra:
+            caveats.append(f"series {d['series_id']} is comparable only with limitations: {', '.join(extra)} (see its comparison record)")
     sig = [d["test"]["sigma_equivalent"] for d in completed if d["test"].get("sigma_equivalent") is not None]
     # A series survives only a control comparison that was actually made: with fewer than MIN_CONTROL_SERIES completed control series the
     # empirical false-alarm fraction is not computed, and an absent test is never counted as a passed one (fixed in 1.1.0; see DECISIONS D-006).

@@ -187,6 +187,19 @@ Live observations (UTC, evidence `.heimdall/verification/2026-11-15-submission/`
 - Worker 5 (pid 97013) runs this code.
 - Tests: full suite 516 OK (5 live skipped); new `FieldRunApiTests` and `FieldRunHandlerTests`.
 
+### Final review — scientific corrections (D-008; this commit, rollback-safe on its own)
+
+- A review of `a808f33..bda5b7d` raised 10 candidates. 5 are scientific semantics and are fixed here:
+  - comparison limitations are now verdict caveats;
+  - sampling follows the configuration;
+  - the artefact gate is analysis-specific and status-aware;
+  - the measurement claim lists only valid flux plus uncertainty;
+  - a null analyses field is guarded.
+- Verified on all five saved targets: every variability verdict reproduces unchanged. Claims now say NOT_ASSESSABLE for NASA-01 and
+  NASA-05 forced photometry, which was UNUSABLE in every image.
+- Tests: full suite 521 OK (5 live skipped).
+- The other 5 candidates are operational and go into the next commit.
+
 ## Integration plan (D-007, revised; pending, not executed)
 
 No squash. No rewrite, force-push or merge until the owner explicitly approves the verified plan.

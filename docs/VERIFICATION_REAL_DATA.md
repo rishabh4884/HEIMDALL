@@ -47,7 +47,7 @@ Everything below was observed on the real archive through the service. None of i
   - Resubmitting returned the stored run with 200 in 10.5 ms (`reused: true`).
   - Its `results_hash` (`sha256:511dc7e3...`) is identical to the CLI run's, from a separate process on the same frozen inputs.
 - **Last real measurement through the service.** NASA-01 at about 06:20 today: `tinv:NASA-01:fd9680e5`, manifest
-  `man:e8ea091b52f6041c`, 10 products, 7 measured, `LIMITED_BY_DATA` because every measured image is saturation-flagged. It is
+  `man:e8ea091b52f6041c`, 10 products, 7 images processed, `LIMITED_BY_DATA`: every processed image is saturation-flagged and its forced flux is `UNUSABLE` (masked fraction above the limit), so no usable flux or centroid was obtained. It is
   described in the next section.
 - **Cached/offline API.** `HEIMDALL_OFFLINE=1 python3 -m heimdall serve` with `POST /api/v1/investigations {"target_id":"NASA-01"}`
   returned HTTP 200 in 22 ms with `served_from: verified local data (no archive request)`.
