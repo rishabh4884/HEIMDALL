@@ -115,9 +115,10 @@ def _parser() -> argparse.ArgumentParser:
         sp.add_argument("--mjd-end", type=float)
         sp.add_argument("--local-root", help="directory for --source local-fits")
 
-    s = sub.add_parser("coverage", help="list observations covering a region (no pixels retrieved)")
+    s = sub.add_parser("coverage", help="list observations covering a region (no pixels retrieved; local index first, or a durable job)")
     region(s)
     s.add_argument("--json", action="store_true")
+    s.add_argument("--live", action="store_true", help="operator diagnostic: query the archive directly instead of the local index")
     s = sub.add_parser("investigate", help="run the full investigation pipeline on a region")
     region(s)
     s.add_argument("--max-observations", type=int, help="evenly spaced selection in time")
@@ -245,9 +246,12 @@ def _run(args) -> int:
     elif args.command == "coverage":
         cov = engine.coverage(args.source, args.ra, args.dec, args.radius, detectors=_ints(args.detectors),
                               collections=_strs(args.collections), mjd_start=args.mjd_start, mjd_end=args.mjd_end,
-                              local_root=args.local_root)
+                              local_root=args.local_root, live=args.live)
         if args.json:
             _print(cov, True)
+        elif cov["outcome"] not in ("OK", "NO_OBSERVATIONS"):
+            job = (cov.get("data_status") or {}).get("job") or {}
+            print(f"{cov['outcome']}: {cov['note']} (job={job.get('job_id')}; do not resubmit)")
         else:
             print(f"{cov['outcome']}: {cov['n_observations']} observation(s); per detector {cov['per_detector']}; "
                   f"{len(cov['epochs'])} epoch(s)")

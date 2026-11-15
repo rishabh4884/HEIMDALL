@@ -148,6 +148,17 @@ Live observations (UTC, evidence `.heimdall/verification/2026-11-15-submission/`
     the strongest series is `COMPARABLE_WITH_LIMITATIONS` (noise model, pixel flags), and its other 11 series are `NOT_COMPARABLE`.
 - Tests: full suite 507 OK (5 live skipped).
 
+### M9 — readiness for the coverage entry point (S-06)
+
+- `Engine.coverage` / CLI `coverage --source irsa-spherex` answer from the local index (`access: LOCAL_INDEX`, `index_as_of`) or return a
+  durable INDEX job (`outcome: PREPARING`, never an archive error, never `NO_OBSERVATIONS` without a successful search). `--live` / `live=True`
+  is the explicit operator diagnostic (also used for non-current collections such as QR2); the opt-in live test now states `live=True`.
+- Real check (offline, local index): Barnard field detector 2 radius 0.02 -> 63 observations in 4 epochs, identical to the earlier live
+  SIA2 answer recorded in `docs/VERIFICATION_REAL_DATA.md`.
+- Observed: the demo script's cancelled coordinate request had already spawned an INDEX child (worker picked it up within
+  milliseconds); cancellation does not propagate to children (recorded as a known limit; one harmless real SIA2 index of RA 10, Dec -5).
+- Tests: full suite (see commit message).
+
 ## Integration plan (D-007, revised; pending, not executed)
 
 No squash. No rewrite, force-push or merge until the owner explicitly approves the verified plan.

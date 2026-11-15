@@ -72,6 +72,8 @@ retained under a service-owned recovery policy (`JobQueue.recover_due`, run by e
 * a parent job that needs a deadline-expired child again revives it with the short attempt deadline and does **not** reset its window;
   map coverage requests (`DataService.coverage`) only report the state and never revive it;
 * `cancel` on a deadline-expired job moves it to `CANCELLED` and stops automatic recovery (`must_resubmit: true`).
+* Known limit: cancelling a parent (target/prefetch) job does not cancel child INDEX/ACQUIRE jobs it already created; they may be shared
+  with other requests and finish (or expire) on their own.
 
 ## Long-running worker (deployment mode)
 

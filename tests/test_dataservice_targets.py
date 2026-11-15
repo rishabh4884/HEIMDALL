@@ -198,6 +198,19 @@ class EnginePreparationTests(unittest.TestCase):
         finally:
             eng.data_service().close()
 
+    def test_engine_coverage_is_readiness_first_and_never_touches_the_archive_offline(self):
+        eng = Engine(settings=load_settings(environ=self.env))
+        try:
+            cov = eng.coverage("irsa-spherex", 150.1, 2.2, 0.05, detectors=[2])
+            self.assertEqual((cov["access"], cov["outcome"]), ("LOCAL_INDEX", "PREPARING"))
+            self.assertIsNone(cov["n_observations"])
+            self.assertFalse(cov["data_status"]["must_resubmit"])
+            self.assertIn("not 'no observations'", cov["note"])
+            again = eng.coverage("irsa-spherex", 150.1, 2.2, 0.05, detectors=[2])
+            self.assertEqual(again["data_status"]["job"]["job_id"], cov["data_status"]["job"]["job_id"])
+        finally:
+            eng.data_service().close()
+
     def test_cli_returns_the_job_id_and_exit_zero(self):
         with mock.patch.dict(os.environ, self.env, clear=False):
             out = io.StringIO()

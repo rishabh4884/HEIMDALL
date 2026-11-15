@@ -109,7 +109,7 @@ python3 -m heimdall reproduce <run_id>      # identical results hash
 
 ```bash
 python3 -m heimdall access irsa-spherex
-python3 -m heimdall coverage --source irsa-spherex --ra 150.7817877 --dec 3.3502204 --radius 0.05 --detectors 2
+python3 -m heimdall coverage --source irsa-spherex --ra 150.7817877 --dec 3.3502204 --radius 0.05 --detectors 2   # local index, or a durable INDEX job (add --live for a direct archive query)
 python3 -m heimdall investigate --source irsa-spherex --ra 150.7817877 --dec 3.3502204 --radius 0.05 \
     --detectors 2 --max-observations 16 --validate
 ```

@@ -71,8 +71,16 @@ class Engine:
 
     def coverage(self, source_id: str, ra: float, dec: float, radius: float, *, detectors: list[int] | None = None,
                  collections: list[str] | None = None, mjd_start: float | None = None, mjd_end: float | None = None,
-                 local_root: str | None = None) -> dict:
-        """Observations covering a region: discovery only, no pixels are retrieved."""
+                 local_root: str | None = None, live: bool = False) -> dict:
+        """Observations covering a region: discovery only, no pixels are retrieved.
+
+        For ``irsa-spherex`` this is readiness-first: the answer comes from the local index (with its index time), or the call returns a
+        durable INDEX job (``outcome: "PREPARING"``) -- an archive outage is never an error here and never ``NO_OBSERVATIONS``.
+        ``live=True`` is the explicit operator diagnostic that queries the archive directly (also used for non-current collections such as
+        QR2, which the index never holds)."""
+        from .dataservice.schemas import CURRENT_COLLECTIONS
+        if source_id == "irsa-spherex" and not live and (not collections or all(c in CURRENT_COLLECTIONS for c in collections)):
+            return self._indexed_coverage(source_id, ra, dec, radius, detectors, collections, mjd_start, mjd_end)
         filters = {}
         if detectors:
             filters["detectors"] = ",".join(str(int(d)) for d in detectors)
@@ -105,6 +113,33 @@ class Engine:
                 "epochs": plain(epochs), "observations": rows, "failed_items": plain(result.failed_items),
                 "note": "NO_OBSERVATIONS means the query succeeded and found none; failures raise errors instead"
                 if result.outcome is ResultOutcome.NO_OBSERVATIONS else ""}
+
+    def _indexed_coverage(self, source_id, ra, dec, radius, detectors, collections, mjd_start, mjd_end) -> dict:
+        from .dataservice.schemas import RegionSpec
+        region = RegionSpec(ra % 360.0, dec, radius, tuple(int(d) for d in detectors) if detectors else None, mjd_start, mjd_end,
+                            tuple(collections) if collections else None)
+        st = self.data_service(source_id).coverage(region, limit=2000)
+        base = {"source_id": source_id, "region": {"ra_deg": ra, "dec_deg": dec, "radius_deg": radius}, "access": "LOCAL_INDEX",
+                "readiness": st["readiness"], "data_status": {k: st.get(k) for k in ("schema", "readiness", "message", "job", "must_resubmit")},
+                "filters": {"detectors": detectors, "collections": collections, "mjd_start": mjd_start, "mjd_end": mjd_end}, "failed_items": []}
+        if st.get("observations") is None:
+            return base | {"outcome": "PREPARING" if st["readiness"] == "PREPARING" else st["readiness"], "n_observations": None, "per_detector": {},
+                           "epochs": [], "observations": [],
+                           "note": "region not indexed yet: a durable INDEX job was created or joined (run a worker); this is not 'no observations'"}
+        rows = [{"obs_id": o["obs_id"], "detector": o["detector"], "release": o["release"],
+                 "mjd": (o["t_min_mjd"] + o["t_max_mjd"]) / 2.0 if o["t_min_mjd"] is not None and o["t_max_mjd"] is not None else o["t_min_mjd"],
+                 "wavelength_min_um": o["wavelength_min_um"], "wavelength_max_um": o["wavelength_max_um"], "pipeline_version": None,
+                 "synthetic": o["synthetic"]} for o in st["observations"]]
+        epochs, _ = build_epochs([(r["obs_id"], r["mjd"]) for r in rows], self.config.temporal.epoch_gap_days)
+        per_detector: dict[str, int] = {}
+        for r in rows:
+            per_detector[str(r["detector"])] = per_detector.get(str(r["detector"]), 0) + 1
+        n = st["n_observations"]
+        return base | {"outcome": "OK" if n else "NO_OBSERVATIONS", "n_observations": n, "per_detector": per_detector, "per_release": st["per_release"],
+                       "epochs": plain(epochs), "observations": rows, "index_as_of": st["index_as_of"],
+                       "note": (f"from the local index as of {st['index_as_of']} (not a live query)"
+                                + ("" if n else "; NO_OBSERVATIONS means a successful archive search found none")
+                                + (f"; first {len(rows)} of {n} listed" if len(rows) < n else ""))}
 
     # -- investigations ------------------------------------------------------------
 
