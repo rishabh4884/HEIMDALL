@@ -40,8 +40,10 @@ CREATE TABLE IF NOT EXISTS jobs(
   job_id TEXT PRIMARY KEY, kind TEXT NOT NULL, payload TEXT NOT NULL, state TEXT NOT NULL, generation INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deadline_at TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
   next_attempt_at TEXT, lease_until TEXT, last_error TEXT, result TEXT, progress TEXT, reason TEXT);
+CREATE INDEX IF NOT EXISTS jobs_state ON jobs(state);
 CREATE TABLE IF NOT EXISTS job_events(
   seq INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL, at TEXT NOT NULL, from_state TEXT, to_state TEXT NOT NULL, reason TEXT, detail TEXT);
+CREATE INDEX IF NOT EXISTS job_events_job ON job_events(job_id, seq);
 CREATE TABLE IF NOT EXISTS route_events(
   seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, route TEXT NOT NULL, ok INTEGER NOT NULL, error_class TEXT, latency_s REAL);
 CREATE TABLE IF NOT EXISTS investigation_results(

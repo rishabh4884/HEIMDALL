@@ -23,6 +23,8 @@ from .productstore import InvalidProduct, ProductStore
 from .schemas import (CURRENT_COLLECTIONS, JOB_TO_READINESS, SCOPE_CURRENT, SCOPE_SYNTHETIC, STATUS_SCHEMA, TERMINAL, USER_MESSAGES, JobState, PlanItem,
                       ProductPlan, Readiness, RegionSpec, ServiceConfig, calibration_key, canonical, digest)
 
+ACTIVE_RUNNING_STATES = (JobState.DISCOVERING, JobState.DOWNLOADING, JobState.VALIDATING)
+OPEN_STATES = set(JobState) - set(TERMINAL)
 KIND_INDEX, KIND_ACQUIRE, KIND_PREFETCH = "INDEX", "ACQUIRE", "PREFETCH"
 TRANSIENT_CODES = {ErrorCode.ARCHIVE_TIMEOUT, ErrorCode.ARCHIVE_UNREACHABLE, ErrorCode.RETRIEVAL_FAILED, ErrorCode.DATA_MALFORMED,
                    ErrorCode.ACCESS_DENIED, ErrorCode.AUTHENTICATION_FAILED}
@@ -271,7 +273,7 @@ class DataService:
     def resume(self) -> list[str]:
         """After a restart: running jobs whose lease expired return to QUEUED so they run again (idempotently); nothing is lost or duplicated."""
         resumed = []
-        for j in self.jobs.list():
+        for j in self.jobs.list(set(ACTIVE_RUNNING_STATES)):
             if j["state"] in (JobState.DISCOVERING, JobState.DOWNLOADING, JobState.VALIDATING) and (parse_ts(j["lease_until"]) or self.clock()) <= self.clock():
                 self.jobs.transition(j["job_id"], JobState.QUEUED, reason="resumed after interruption")
                 resumed.append(j["job_id"])
@@ -299,7 +301,7 @@ class DataService:
         while time.monotonic() - t0 < max_seconds and not self.offline:
             done = self.tick(max_seconds=max(1.0, max_seconds - (time.monotonic() - t0)))
             ran += [d.get("job_id", "") for d in done]
-            open_jobs = [j for j in self.jobs.list() if j["state"] not in TERMINAL]
+            open_jobs = self.jobs.list(OPEN_STATES)
             if not open_jobs:
                 break
             if not done:
@@ -308,7 +310,7 @@ class DataService:
                 if time.monotonic() - t0 + wait >= max_seconds:
                     break
                 sleep(wait)
-        open_jobs = [j for j in self.jobs.list() if j["state"] not in TERMINAL]
+        open_jobs = self.jobs.list(OPEN_STATES)
         return {"resumed": resumed, "jobs_run": len(ran), "open_jobs": [self.describe_job(j) for j in open_jobs], "offline": self.offline,
                 "note": "open jobs continue on the next worker run; no resubmission is needed" if open_jobs else "no open jobs"}
 
@@ -362,8 +364,7 @@ class DataService:
             while not stop.is_set() and (max_ticks is None or state["ticks"] < max_ticks):
                 state["busy"] = True
                 ran = self.tick(max_seconds=tick_budget_s)
-                state.update(busy=False, ticks=state["ticks"] + 1, jobs_run=state["jobs_run"] + len(ran),
-                             open_jobs=sum(j["state"] not in TERMINAL for j in self.jobs.list()))
+                state.update(busy=False, ticks=state["ticks"] + 1, jobs_run=state["jobs_run"] + len(ran), open_jobs=self.jobs.count_open())
                 beat()
                 if not ran:
                     nxt = self._next_wake()

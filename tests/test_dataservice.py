@@ -846,3 +846,23 @@ class ParentPollTests(Base):
         child = s.jobs.list(kind=KIND_INDEX)[0]
         self.assertGreaterEqual(child["attempts"], 1)  # the child's real archive attempts are still counted
 
+
+
+class QueueScaleTests(Base):
+    def test_worker_scheduling_cost_does_not_grow_with_finished_history(self):
+        import time as _t
+        s = self.svc()
+        with s.db.transaction() as db:
+            for i in range(5000):
+                db.conn.execute("INSERT INTO jobs(job_id,kind,payload,state,generation,created_at,updated_at,deadline_at,attempts,progress) VALUES(?,?,?,?,1,?,?,?,0,'{}')",
+                                (f"job:index:{i:012x}", KIND_INDEX, "{}", "COMPLETE", "2026-11-15T00:00:00+00:00", "2026-11-15T00:00:00+00:00", "2026-11-15T06:00:00+00:00"))
+        st = s.ensure_index(REGION)
+        t0 = _t.perf_counter()
+        for _ in range(20):
+            due = s.jobs.due()
+            s.jobs.recover_due()
+            s._next_wake()
+            s.jobs.count_open()
+        per_wake = (_t.perf_counter() - t0) / 20
+        self.assertEqual([j["job_id"] for j in due], [st["job"]["job_id"]])
+        self.assertLess(per_wake, 0.05)  # SQL-filtered: finished jobs are not decoded on every wake

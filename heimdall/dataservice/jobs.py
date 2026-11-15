@@ -88,15 +88,27 @@ class JobQueue:
                 self.db.query("SELECT at,from_state,to_state,reason,detail FROM job_events WHERE job_id=? ORDER BY seq", (job_id,))]
 
     def list(self, states: set[JobState] | None = None, kind: str | None = None) -> list[dict]:
-        rows = self.db.query("SELECT * FROM jobs ORDER BY created_at, job_id")
-        out = [self._dict(r) for r in rows]
-        return [j for j in out if (states is None or j["state"] in states) and (kind is None or j["kind"] == kind)]
+        """Filtered in SQL (indexed on state), so the worker loop does not decode the whole job history on every wake."""
+        where, args = [], []
+        if states is not None:
+            if not states:
+                return []
+            where.append(f"state IN ({','.join('?' * len(states))})")
+            args += [str(x) for x in sorted(states)]
+        if kind is not None:
+            where.append("kind=?")
+            args.append(kind)
+        sql = "SELECT * FROM jobs" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY created_at, job_id"
+        return [self._dict(r) for r in self.db.query(sql, tuple(args))]
+
+    def count_open(self) -> int:
+        return int(self.db.one(f"SELECT COUNT(*) FROM jobs WHERE state NOT IN ({','.join('?' * len(TERMINAL))})", tuple(str(x) for x in TERMINAL))[0])
 
     def due(self, now: datetime | None = None) -> list[dict]:
         """Jobs ready to run: QUEUED; PREPARING_DATA whose retry time has come; running states whose lease expired (crash recovery)."""
         now = now or self.clock()
         out = []
-        for j in self.list():
+        for j in self.list({JobState.QUEUED, JobState.PREPARING_DATA} | set(ACTIVE_RUNNING)):
             s = j["state"]
             if s is JobState.QUEUED:
                 out.append(j)
