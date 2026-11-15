@@ -60,7 +60,10 @@ def request_field_run(engine, request: InvestigationRequest) -> dict:
         if prior is not None:
             return summary(prior) | {"readiness": Readiness.READY.value, "reused": True}
     job, _ = svc.jobs.submit(KIND_FIELD, payload, revive_complete=True)
-    return field_status(engine, job["job_id"])
+    st = field_status(engine, job["job_id"])
+    if st.get("run"):  # an identical, already completed job: return the run itself
+        return st["run"] | {"readiness": Readiness.READY.value, "job_id": job["job_id"], "reused": True}
+    return st
 
 
 def field_status(engine, job_id: str) -> dict:
@@ -85,9 +88,8 @@ def make_handler(engine):
         service.jobs.transition(jid, JobState.DISCOVERING, reason="preparing field data", lease=True)
         try:
             result, run_dir = engine.investigate(_request(payload))
-        except Exception as exc:  # noqa: BLE001 - a software error ends in a recorded, retried state, not a crash loop
-            return service.jobs.schedule_retry(service.jobs.get(jid), error={"code": "UNEXPECTED", "message": f"{type(exc).__name__}: {exc}"},
-                                               reason="unexpected error; retrying automatically", progress={"waiting_on": "retry"})
+        except Exception as exc:  # noqa: BLE001 - recorded: request errors fail; unexpected errors retry a bounded number of times, then FAILED
+            return service.jobs.fail_or_retry(service.jobs.get(jid), exc)
         if run_dir is None:  # data not yet local: wait on the prefetch job that owns acquisition
             child = (result.get("job") or {}).get("job_id")
             readiness = result.get("readiness")

@@ -908,3 +908,26 @@ class FieldRunHandlerTests(Base):
         self.assertEqual(j["result"]["run_id"], "R20261115T090000-0123abcd")
         row = s.db.one("SELECT investigation_id FROM investigation_results WHERE key=?", (_key(eng, payload, "man:00aa"),))
         self.assertEqual(row["investigation_id"], "R20261115T090000-0123abcd")
+
+
+class SoftwareErrorTests(Base):
+    def test_request_errors_fail_at_once_and_unexpected_errors_are_bounded(self):
+        s = self.svc()
+        job, _ = s.jobs.submit("CUSTOM", {"x": 1})
+        out = s.jobs.fail_or_retry(job, HeimdallError.of(ErrorCode.INPUT_INVALID, "bad request"))
+        self.assertEqual(out["state"], JobState.FAILED)
+        st = s.job_status(job["job_id"])
+        self.assertEqual(st["readiness"], "FAILED")
+        self.assertTrue(st["must_resubmit"])
+        self.assertIn("not an archive outage", st["message"])
+        job2, _ = s.jobs.submit("CUSTOM", {"x": 2})
+        for i in range(3):
+            j = s.jobs.fail_or_retry(s.jobs.get(job2["job_id"]), KeyError("boom"))
+            if i < 2:
+                self.assertEqual(j["state"], JobState.PREPARING_DATA)
+                s.jobs.transition(job2["job_id"], JobState.DISCOVERING, reason="next attempt")
+        self.assertEqual(s.jobs.get(job2["job_id"])["state"], JobState.FAILED)
+        self.assertNotIn("archive", s.jobs.get(job2["job_id"])["reason"])
+        again, created = s.jobs.submit("CUSTOM", {"x": 2})  # a new request after the fix revives it
+        self.assertTrue(created)
+        self.assertEqual(again["state"], JobState.QUEUED)

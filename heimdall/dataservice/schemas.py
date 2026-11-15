@@ -34,14 +34,15 @@ class JobState(StrEnum):
     UNAVAILABLE_AFTER_DEADLINE = "UNAVAILABLE_AFTER_DEADLINE"
     INVALID_SOURCE_DATA = "INVALID_SOURCE_DATA"  # retrieved data failed validation
     CANCELLED = "CANCELLED"
+    FAILED = "FAILED"  # a software or request error (not an archive state, not a scientific result); retried at most a few times
 
 
 TERMINAL = frozenset({JobState.COMPLETE, JobState.NO_COVERAGE, JobState.UNAVAILABLE_AFTER_DEADLINE, JobState.INVALID_SOURCE_DATA,
-                      JobState.CANCELLED})
+                      JobState.CANCELLED, JobState.FAILED})
 ACTIVE_RUNNING = frozenset({JobState.DISCOVERING, JobState.DOWNLOADING, JobState.VALIDATING})
 # Allowed transitions. Terminal states are revived (generation + 1, recorded in job_events) only by a new submission or, for
 # UNAVAILABLE_AFTER_DEADLINE, by the documented service-owned recovery policy (JobQueue.recover_due); never by a silent state edit.
-TRANSITIONS: dict[JobState, frozenset[JobState]] = {
+TRANSITIONS_BASE: dict[JobState, frozenset[JobState]] = {
     JobState.QUEUED: frozenset({JobState.DISCOVERING, JobState.DOWNLOADING, JobState.PREPARING_DATA, JobState.CANCELLED,
                                 JobState.UNAVAILABLE_AFTER_DEADLINE, JobState.COMPLETE, JobState.NO_COVERAGE, JobState.INVALID_SOURCE_DATA}),
     JobState.DISCOVERING: frozenset({JobState.DOWNLOADING, JobState.PREPARING_DATA, JobState.COMPLETE, JobState.NO_COVERAGE, JobState.QUEUED,
@@ -52,7 +53,10 @@ TRANSITIONS: dict[JobState, frozenset[JobState]] = {
                                     JobState.UNAVAILABLE_AFTER_DEADLINE, JobState.INVALID_SOURCE_DATA}),
     JobState.PREPARING_DATA: frozenset({JobState.QUEUED, JobState.DISCOVERING, JobState.DOWNLOADING, JobState.COMPLETE, JobState.NO_COVERAGE,
                                         JobState.CANCELLED, JobState.UNAVAILABLE_AFTER_DEADLINE, JobState.INVALID_SOURCE_DATA}),
+}
+TRANSITIONS: dict[JobState, frozenset[JobState]] = {
     **{s: frozenset() for s in TERMINAL},
+    **{s: TRANSITIONS_BASE[s] | {JobState.FAILED} for s in TRANSITIONS_BASE},
     JobState.UNAVAILABLE_AFTER_DEADLINE: frozenset({JobState.CANCELLED}),  # a user may stop the automatic recovery policy
 }
 
@@ -65,11 +69,13 @@ class Readiness(StrEnum):
     UNAVAILABLE_AFTER_DEADLINE = "UNAVAILABLE_AFTER_DEADLINE"
     INVALID_SOURCE_DATA = "INVALID_SOURCE_DATA"
     CANCELLED = "CANCELLED"
+    FAILED = "FAILED"
 
 
 JOB_TO_READINESS = {JobState.COMPLETE: Readiness.READY, JobState.NO_COVERAGE: Readiness.NO_COVERAGE,
                     JobState.UNAVAILABLE_AFTER_DEADLINE: Readiness.UNAVAILABLE_AFTER_DEADLINE,
-                    JobState.INVALID_SOURCE_DATA: Readiness.INVALID_SOURCE_DATA, JobState.CANCELLED: Readiness.CANCELLED}
+                    JobState.INVALID_SOURCE_DATA: Readiness.INVALID_SOURCE_DATA, JobState.CANCELLED: Readiness.CANCELLED,
+                    JobState.FAILED: Readiness.FAILED}
 
 # Current searchable releases (documented by IRSA). QR2 is downloadable but not searchable and is never mixed in silently.
 CURRENT_COLLECTIONS = ("spherex_dr1", "spherex_dr1_deep", "spherex_qr3", "spherex_qr3_deep")
@@ -86,6 +92,8 @@ USER_MESSAGES = {
                                           "See auto_recovery: while it is active HEIMDALL re-checks the archive itself and you do not need to resubmit.",
     Readiness.INVALID_SOURCE_DATA: "The archive returned data that failed integrity or format validation, so it was quarantined and not used.",
     Readiness.CANCELLED: "The request was cancelled.",
+    Readiness.FAILED: "The request could not be processed because of a software or request error (details in job.last_error). "
+                      "This is not an archive outage and not a scientific result; submit again after the cause is fixed.",
 }
 
 

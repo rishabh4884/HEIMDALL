@@ -190,9 +190,8 @@ def make_handler(*, settings, config, registry, store):
         service.jobs.transition(jid, JobState.DISCOVERING, reason="preparing data for the investigation", lease=True)
         try:
             step = advance(service, spec, opts, settings=settings, config=config, registry=registry, store=store, online=True)
-        except Exception as exc:  # noqa: BLE001 - an unexpected software error must end in a recorded state, not a crash loop
-            return service.jobs.schedule_retry(service.jobs.get(jid), error={"code": "UNEXPECTED", "message": f"{type(exc).__name__}: {exc}"},
-                                               reason="unexpected error while preparing; retrying automatically", progress={"waiting_on": "retry"})
+        except Exception as exc:  # noqa: BLE001 - recorded: request errors fail; unexpected errors retry a bounded number of times, then FAILED
+            return service.jobs.fail_or_retry(service.jobs.get(jid), exc)
         state = step["state"]
         if state == "DONE":
             res = step["result"]

@@ -200,6 +200,23 @@ Live observations (UTC, evidence `.heimdall/verification/2026-11-15-submission/`
 - Tests: full suite 521 OK (5 live skipped).
 - The other 5 candidates are operational and go into the next commit.
 
+### Final review — operational fixes (this commit)
+
+- New terminal state `FAILED` (readiness `FAILED`):
+  - request/configuration errors fail at once;
+  - unexpected software errors are retried at most 3 times;
+  - such errors are never left to run into the archive deadline and be reported as an outage;
+  - `must_resubmit: true`.
+- `reproduce`/`validate` use the original run's access path: manifest-based runs replay from local data, older runs use the archive
+  adapter's cache.
+- Readiness-path blind runs:
+  - an explicit `obs_ids` list that differs from the service plan is refused (use `--live`);
+  - the bounded default of 16 observations is recorded as a result warning.
+- Coverage `per_detector` is computed over the whole indexed set.
+- `POST /runs` answers 202 only while preparing; a completed duplicate job returns its run.
+- `scripts/demo_submission.sh` shows claims, local-index coverage and field-run reuse.
+- Tests: full suite (see commit message).
+
 ## Integration plan (D-007, revised; pending, not executed)
 
 No squash. No rewrite, force-push or merge until the owner explicitly approves the verified plan.

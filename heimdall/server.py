@@ -282,7 +282,7 @@ class Api:
                                    mjd_start=_num(q, "mjd_start", 50000, 80000) if "mjd_start" in q else None,
                                    mjd_end=_num(q, "mjd_end", 50000, 80000) if "mjd_end" in q else None)
         out = request_field_run(self.engine, req)
-        return (200 if out.get("run_id") else 202), out
+        return (202 if out.get("readiness") == "PREPARING" else 200), out
 
     def coverage(self, query: dict) -> dict:
         from .dataservice.schemas import RegionSpec

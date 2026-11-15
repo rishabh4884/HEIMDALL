@@ -49,7 +49,9 @@ as `PREPARING` with `job.next_attempt_at`.
    `job.progress`, `job.reason`, `job.last_error` (technical detail; do not show raw), `events[]` (history).
 3. Done: the response *is* the result (has `investigation_id`) plus `data_status`. Terminal non-results: `readiness` = `NO_COVERAGE`
    (archive searched successfully, nothing there), `UNAVAILABLE_AFTER_DEADLINE` (archive outage; **not** a scientific result; see
-   `job.auto_recovery`), `INVALID_SOURCE_DATA`, `CANCELLED`. Show `must_resubmit` literally: it is `true` only when the service has stopped.
+   `job.auto_recovery`), `INVALID_SOURCE_DATA`, `CANCELLED`, `FAILED` (software/request error; not an outage, not a result). Show
+   `must_resubmit` literally: it is `true` only when the service has stopped. `POST /runs` answers 202 only while `PREPARING`; a stored run
+   or a terminal state is 200.
 
 ## Result fields to display (`heimdall.target_investigation/1.0`; full schema `docs/OUTPUT_SCHEMA.md`)
 

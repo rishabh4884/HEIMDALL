@@ -52,7 +52,7 @@ class JobQueue:
                                  now_iso(now + timedelta(seconds=deadline_s or self.cfg.deadline_s)), "{}"))
                 db.conn.execute("INSERT INTO job_events(job_id,at,from_state,to_state,reason) VALUES(?,?,?,?,?)", (jid, now_iso(now), None, JobState.QUEUED, "submitted"))
                 created = True
-            elif not revive_terminal and JobState(row["state"]) in (JobState.UNAVAILABLE_AFTER_DEADLINE, JobState.CANCELLED):
+            elif not revive_terminal and JobState(row["state"]) in (JobState.UNAVAILABLE_AFTER_DEADLINE, JobState.CANCELLED, JobState.FAILED):
                 created = False  # status-only callers (e.g. map coverage polling) report the terminal state; they never revive it
             elif internal and JobState(row["state"]) is JobState.UNAVAILABLE_AFTER_DEADLINE:
                 # a dependent job (a parent's worker step) needs this child again: short attempt, recovery window unchanged
@@ -61,7 +61,7 @@ class JobQueue:
                 db.conn.execute("INSERT INTO job_events(job_id,at,from_state,to_state,reason) VALUES(?,?,?,?,?)",
                                 (jid, now_iso(now), row["state"], JobState.QUEUED, "revived for a dependent job (recovery window unchanged)"))
                 created = True
-            elif JobState(row["state"]) in (JobState.UNAVAILABLE_AFTER_DEADLINE, JobState.CANCELLED) or (revive_complete and JobState(row["state"]) is JobState.COMPLETE):
+            elif JobState(row["state"]) in (JobState.UNAVAILABLE_AFTER_DEADLINE, JobState.CANCELLED, JobState.FAILED) or (revive_complete and JobState(row["state"]) is JobState.COMPLETE):
                 db.conn.execute("UPDATE jobs SET state=?, generation=generation+1, updated_at=?, deadline_at=?, attempts=0, next_attempt_at=NULL, lease_until=NULL, reason=? WHERE job_id=?",
                                 (JobState.QUEUED, now_iso(now), now_iso(now + timedelta(seconds=deadline_s or self.cfg.deadline_s)), "resubmitted", jid))
                 db.conn.execute("INSERT INTO job_events(job_id,at,from_state,to_state,reason) VALUES(?,?,?,?,?)", (jid, now_iso(now), row["state"], JobState.QUEUED, "resubmitted by a new request (data no longer present locally)" if row["state"] == "COMPLETE" else "resubmitted by a new request"))
@@ -207,11 +207,26 @@ class JobQueue:
             revived.append(j["job_id"])
         return revived
 
+    MAX_SOFTWARE_ERRORS = 3
+
+    def fail_or_retry(self, job: dict, exc: BaseException, *, progress: dict | None = None) -> dict:
+        """A software/request error in a job step: request errors fail at once; unexpected errors are retried a bounded number of times and
+        then end in FAILED -- never left to run into the archive deadline and be reported as an outage."""
+        from ..contracts import ErrorCode, HeimdallError
+        err = {"code": "UNEXPECTED", "message": f"{type(exc).__name__}: {exc}"}
+        if isinstance(exc, HeimdallError) and exc.code in (ErrorCode.INPUT_INVALID, ErrorCode.CONFIG_INVALID):
+            return self.transition(job["job_id"], JobState.FAILED, reason="request or configuration error", error=err | {"code": str(exc.code)})
+        n = 1 + sum(1 for e in self.events(job["job_id"]) if (e["reason"] or "").startswith("unexpected error"))
+        if n >= self.MAX_SOFTWARE_ERRORS:
+            return self.transition(job["job_id"], JobState.FAILED, reason=f"software error repeated {n} times", error=err)
+        return self.schedule_retry(job, error=err, reason=f"unexpected error ({n}/{self.MAX_SOFTWARE_ERRORS}); retrying automatically",
+                                   progress=progress or {"waiting_on": "retry"})
+
     def must_resubmit(self, job: dict | None) -> bool:
         """True only when the service will take no further action on its own and a new request is the only way to try again."""
         if job is None:
             return False
-        if job["state"] is JobState.CANCELLED:
+        if job["state"] in (JobState.CANCELLED, JobState.FAILED):
             return True
         if job["state"] is JobState.UNAVAILABLE_AFTER_DEADLINE:
             return not (self.recovery_info(job) or {}).get("active", False)

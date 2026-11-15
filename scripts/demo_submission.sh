@@ -41,6 +41,17 @@ print("current:", r["investigation_id"], "| motion:", r["analyses"]["motion"]["v
 s = r.get("supersedes")
 print("supersedes:", s and s["investigation_id"], "|", s and s["reason"])'
 
+echo "== 3b. auditable claims (claim types + 8-check defensibility gate), NASA-02"
+python3 -m heimdall target claims NASA-02 | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+print("headline:", d["headline_claim"])
+for c in d["claims"]:
+    print(" ", c["analysis"], "->", c["claim_type"], "| gate passed:", c["gate"]["passed"], "| does not establish:", c["does_not_establish"][0])'
+
+echo "== 3c. coverage from the local index (no archive request)"
+python3 -m heimdall coverage --source irsa-spherex --ra 269.4485 --dec 4.7394 --radius 0.02 --detectors 2 | head -2
+
 echo "== 4. data service: queue, routes, store, worker heartbeat"
 python3 -m heimdall data status | python3 -c '
 import json, sys
@@ -61,6 +72,10 @@ import json, sys
 d = json.load(sys.stdin)
 print("uncached coordinate ->", d.get("readiness"), d["job"]["job_id"], "must_resubmit:", d["must_resubmit"], file=sys.stderr)
 print(d["job"]["job_id"])')
+curl -s -X POST -d '{"ra":150.1,"dec":2.2,"radius":0.05,"detectors":[2],"max_observations":4,"cutout_size_deg":0.1}' "$B/runs" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+print("field run ->", "stored run " + d["run_id"] + " (reused)" if d.get("run_id") else "job " + d["job"]["job_id"] + " (" + d["readiness"] + ")")'
 # the demo cancels its own job so a running worker does not spend archive time on it
 curl -s -X POST "$B/jobs/$JOB/cancel" | python3 -c 'import json,sys; d=json.load(sys.stdin); print("cancelled demo job ->", d["readiness"], "must_resubmit:", d["must_resubmit"])'
 echo "done."

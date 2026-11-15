@@ -131,15 +131,13 @@ class Engine:
                  "wavelength_min_um": o["wavelength_min_um"], "wavelength_max_um": o["wavelength_max_um"], "pipeline_version": None,
                  "synthetic": o["synthetic"]} for o in st["observations"]]
         epochs, _ = build_epochs([(r["obs_id"], r["mjd"]) for r in rows], self.config.temporal.epoch_gap_days)
-        per_detector: dict[str, int] = {}
-        for r in rows:
-            per_detector[str(r["detector"])] = per_detector.get(str(r["detector"]), 0) + 1
+        per_detector = dict(st["per_detector"])  # over the whole indexed set, not just the listed page
         n = st["n_observations"]
         return base | {"outcome": "OK" if n else "NO_OBSERVATIONS", "n_observations": n, "per_detector": per_detector, "per_release": st["per_release"],
                        "epochs": plain(epochs), "observations": rows, "index_as_of": st["index_as_of"],
                        "note": (f"from the local index as of {st['index_as_of']} (not a live query)"
                                 + ("" if n else "; NO_OBSERVATIONS means a successful archive search found none")
-                                + (f"; first {len(rows)} of {n} listed" if len(rows) < n else ""))}
+                                + (f"; first {len(rows)} of {n} listed (epochs computed over the listed rows)" if len(rows) < n else ""))}
 
     # -- investigations ------------------------------------------------------------
 
@@ -163,12 +161,17 @@ class Engine:
             svc = self.data_service(request.source_id)
             region = RegionSpec(request.ra_deg % 360.0, request.dec_deg, request.radius_deg, tuple(request.detectors) if request.detectors else None,
                                 request.mjd_start, request.mjd_end, tuple(request.collections) if request.collections else None)
+            bounded_default = request.max_observations is None
             st = svc.prefetch(region, cutout_size_deg=request.cutout_size_deg, max_observations=request.max_observations or 16)
             if st["readiness"] != "READY":
                 return st | {"investigation": None, "note": "no scientific result yet: the region's data are being prepared by a durable job "
                                                              "(run a worker); this is not a non-detection"}, None
             input_manifest = svc.manifest(st["manifest_id"])
-            request = dataclasses.replace(request, ra_deg=region.ra_deg, obs_ids=[p["obs_id"] for p in input_manifest["products"]])
+            planned = [p["obs_id"] for p in input_manifest["products"]]
+            if request.obs_ids and set(request.obs_ids) != set(planned):
+                raise HeimdallError.of(ErrorCode.INPUT_INVALID, "an explicit observation list that differs from the service's plan is not supported "
+                                       "on the readiness path; use live=True (--live)")
+            request = dataclasses.replace(request, ra_deg=region.ra_deg, obs_ids=planned, max_observations=request.max_observations or 16)
             source = LocalStoreSource(svc, input_manifest)
             settings = dataclasses.replace(self.settings, offline=True)  # context from cache only; nothing on this path uses the network
         else:
@@ -181,6 +184,9 @@ class Engine:
                                         "calibrations": input_manifest["calibrations"], "index": input_manifest.get("index")}
             result["data_status"] = {"readiness": "READY", "served_from": "verified local data (no archive request)",
                                      "manifest_id": input_manifest["manifest_id"]}
+            if bounded_default:
+                result.setdefault("warnings", []).append("max_observations was not given: the readiness path analysed 16 evenly spaced observations "
+                                                         "(the service's bounded default), not every observation in the region")
         run_dir = None
         if save:
             skymap = build_skymap(result)
@@ -313,7 +319,7 @@ class Engine:
         request = InvestigationRequest.from_dict(original["request"])
         engine = Engine(self.settings, EngineConfig.from_dict(original["config"]), self.adapters)
         # the original access path (archive adapter with its own cache-first replay), so the observation selection and hash are comparable
-        rerun, run_dir = engine.investigate(request, live=True)
+        rerun, run_dir = engine.investigate(request, live=not original.get("input_manifest"))  # same access path as the original run
         return {"original_run": original["run_id"], "rerun": rerun["run_id"], "rerun_dir": str(run_dir) if run_dir else None,
                 "original_hash": original["results_hash"], "rerun_hash": rerun["results_hash"],
                 "identical": original["results_hash"] == rerun["results_hash"],
@@ -324,7 +330,7 @@ class Engine:
         original = self.load(ref)
         request = InvestigationRequest.from_dict({**original["request"], "run_validation": True})
         engine = Engine(self.settings, EngineConfig.from_dict(original["config"]), self.adapters)
-        result, run_dir = engine.investigate(request, live=True)  # same access path as the stored run
+        result, run_dir = engine.investigate(request, live=not original.get("input_manifest"))  # same access path as the stored run
         return {"run_id": result["run_id"], "run_dir": str(run_dir) if run_dir else None,
                 "validation": result["validation"], "summary": summarize(result)}
 

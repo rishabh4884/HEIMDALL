@@ -41,10 +41,11 @@ QUEUED -> DISCOVERING -> DOWNLOADING <-> VALIDATING -> COMPLETE
     \            +--------------> PREPARING_DATA  (upstream failed; next attempt scheduled; back to DISCOVERING/DOWNLOADING when due)
      +--> NO_COVERAGE (a *successful* discovery found nothing)       PREPARING_DATA --(deadline)--> UNAVAILABLE_AFTER_DEADLINE
      +--> INVALID_SOURCE_DATA (retrieved data failed validation)     any non-terminal --> CANCELLED
+     +--> FAILED (software/request error: request errors at once, unexpected errors after 3 attempts; never reported as an outage)
 ```
 
 * `COMPLETE`: all required verified local data exist (a *readiness* of `READY`). `NO_COVERAGE`, `UNAVAILABLE_AFTER_DEADLINE`,
-  `INVALID_SOURCE_DATA`, `CANCELLED` are terminal; illegal transitions raise. A route failure is **never** `NO_COVERAGE`.
+  `INVALID_SOURCE_DATA`, `CANCELLED`, `FAILED` are terminal; illegal transitions raise. A route failure is **never** `NO_COVERAGE`.
 * A terminal `UNAVAILABLE_AFTER_DEADLINE`/`CANCELLED` job is revived (generation + 1, history kept) only by a *new* submission; a `COMPLETE`
   job is reopened only if its data are no longer present locally.
 * Composite jobs: `PREFETCH` and `TARGET_INVESTIGATION` own child `INDEX`/`ACQUIRE` jobs, wait on them (`PREPARING_DATA` with the child's next
@@ -86,7 +87,7 @@ and `deploy/com.heimdall.worker.plist` (launchd). One worker per state directory
 
 ## User-facing readiness contract (`heimdall.data_status/1.0`)
 
-`readiness` is one of `READY`, `PREPARING`, `NO_COVERAGE`, `UNAVAILABLE_AFTER_DEADLINE`, `INVALID_SOURCE_DATA`, `CANCELLED`, with a user-safe
+`readiness` is one of `READY`, `PREPARING`, `NO_COVERAGE`, `UNAVAILABLE_AFTER_DEADLINE`, `INVALID_SOURCE_DATA`, `CANCELLED`, `FAILED`, with a user-safe
 `message`, the `job` (state, attempts, next attempt time and seconds, last error, progress, `auto_recovery`), `must_resubmit` (see above), and for target
 investigations a `status.execution` compatible with the existing result schema (`PREPARING_DATA` while preparing). Structured technical
 detail (HTTP status, route, error class) stays in `job.last_error`, the job `events`, and `data status`. A completed investigation is the
