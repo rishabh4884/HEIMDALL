@@ -130,23 +130,30 @@ Live observations (UTC, evidence `.heimdall/verification/2026-11-15-submission/`
   - plus this ledger commit
 - No CI exists in the repository. `main` is unchanged at `462c8b4`.
 
-## Integration plan (D-007; pending, not executed)
+## Integration plan (D-007, revised; pending, not executed)
 
-Gate, all required first:
-- every planned milestone is committed and pushed to `backend/submission-2026-11-15`;
-- the full suite is green;
-- `scripts/demo_submission.sh --tests` passes;
-- the ledger is final.
+No squash. No rewrite, force-push or merge until the owner explicitly approves the verified plan.
 
-Then, with no history rewrite and no force-push:
-
-1. `git fetch origin && git switch main && git pull --ff-only` (`main` should still be `462c8b4` plus any commits by the owner).
-2. `git merge --squash backend/submission-2026-11-15`, then review the staged diff and run the full suite on the result.
-3. Commit once, under the owner's identity (`git config user.name`/`user.email` checked first; stop on a mismatch). Use a plain message
-   summarising the milestones, with no co-author or tool trailers.
-4. `git push origin main` (a normal fast-forward push). Then verify `git ls-remote origin main` and that the tree equals the
-   development branch's final tree.
-5. The development branch is left as it is; delete it only if the owner asks.
+1. Gate:
+   - all milestones are committed and pushed;
+   - the full suite is green;
+   - `scripts/demo_submission.sh --tests` passes;
+   - review is done and the ledger is final.
+2. Verify the cleanup in a disposable clone first:
+   - `git filter-branch --msg-filter` removes only the co-author trailer lines (and trailing blank lines);
+   - for every commit, compare tree hashes, author name/email/date and committer date with the originals; all must be identical;
+   - remaining message text must be unchanged and no trailer may remain;
+   - the full suite passes on the rewritten head.
+3. Present the verification to the owner and ask for explicit approval.
+4. After approval:
+   - push a backup branch of the current head;
+   - rewrite the development branch locally;
+   - `git push --force-with-lease=backend/submission-2026-11-15:<current head> origin backend/submission-2026-11-15`;
+   - verify with `git ls-remote`.
+5. Merge into `main` with a normal merge that keeps every commit:
+   - `git switch main && git pull --ff-only && git merge --no-ff backend/submission-2026-11-15`, or `--ff-only` if the owner prefers;
+   - run the full suite;
+   - `git push origin main` (a normal push).
 
 ## Deferred (explicitly out of today's scope; see `docs/BACKEND_MASTER_SPEC.md` for entry points)
 
