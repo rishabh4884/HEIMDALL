@@ -52,11 +52,12 @@
     <section id="judge" class="judge" aria-labelledby="judge-title">
       <div>
         <p class="judge-kicker">HEIMDALL turns SPHEREx observations into auditable scientific conclusions.</p>
-        <h2 id="judge-title">Epsilon Indi B, measured moving across real SPHEREx images</h2>
-        <p id="judge-facts" class="judge-facts">Real SPHEREx data · stored NASA-02 investigation</p>
+        <h2 id="judge-title">Investigate any star, moving body or sky position in real SPHEREx data</h2>
+        <p class="judge-how">Search a name or coordinates, or select a region on the map. Every answer traces back to the archive images behind it.</p>
+        <p class="judge-example"><span>Worked example · Epsilon Indi B:</span> <span id="judge-facts" class="judge-facts">Real SPHEREx data · stored real-data investigation</span></p>
         <p class="judge-caveat">Provisional: method not yet validated on real data.</p>
       </div>
-      <div class="judge-actions"><button type="button" class="primary judge-go" data-action="judge"><svg><use href="#i-arrow"></use></svg>See the real motion evidence</button><small>Opens the NASA-02 demonstration · Quick answer</small></div>
+      <div class="judge-actions"><label for="omni-input" class="primary judge-search"><svg><use href="#i-search"></use></svg>Investigate a star or position</label><button type="button" class="quiet judge-go judge-example-go" data-action="judge"><svg><use href="#i-arrow"></use></svg>See the worked example</button><small>The five stored cases are demonstrations, not the limit</small></div>
     </section>
     <section class="page-heading" aria-labelledby="title">
       <div><h1 id="title">Explore the sky</h1><p id="subtitle">Explore SPHEREx observations and trace findings to their evidence.</p><div id="heading-chips" class="record-meta"></div></div>
@@ -125,7 +126,7 @@
         <button class="quiet" type="button" data-panel="layers" aria-expanded="false" aria-controls="workbench-controls"><svg><use href="#i-layers"></use></svg>Layers &amp; filters <span id="filter-count" class="count" hidden></span></button>
       </nav>
       <aside class="rail" id="workbench-controls" aria-label="Library, layers and filters">
-        <div class="rail-top"><h2>Library</h2><div class="segmented" id="library-tabs" role="group" aria-label="Record type"><button type="button" data-library="targets" aria-pressed="true">Targets</button><button type="button" data-library="runs" aria-pressed="false">Saved fields</button></div></div>
+        <div class="rail-top"><h2>Library</h2><div class="segmented" id="library-tabs" role="group" aria-label="Record type"><button type="button" data-library="targets" aria-pressed="true">Demonstrations</button><button type="button" data-library="runs" aria-pressed="false">Saved fields</button></div></div>
         <div id="library" class="library" aria-busy="true"><p class="empty">Loading investigations…</p></div>
         <section class="rail-section" aria-labelledby="layers-title">
           <h2 id="layers-title"><svg><use href="#i-layers"></use></svg>Map layers</h2>
@@ -161,6 +162,20 @@
       </section>
     </div>
     <footer class="page-footer"><span>HEIMDALL <span id="software-version"></span> · SPHEREx research workbench</span><span>DR1 survey imagery with HEIMDALL evidence overlays. Indexed is not analysed; nothing here is a validated detection.</span></footer>
+    <details class="credits" id="credits">
+      <summary>Credits, data acknowledgements and citations</summary>
+      <p>HEIMDALL is an independent NASA Space Apps Challenge project. It is not endorsed by or affiliated with NASA, JPL, Caltech/IPAC, ESA or CDS; their names identify data sources only.</p>
+      <ul>
+        <li><strong>SPHEREx</strong>: uses data products from the Spectro-Photometer for the History of the Universe, Epoch of Reionization and Ices Explorer (SPHEREx), a joint project of the Jet Propulsion Laboratory and the California Institute of Technology, funded by NASA. DR1 Spectral Images <a href="https://doi.org/10.26131/IRSA678" target="_blank" rel="noopener noreferrer">doi:10.26131/IRSA678</a>; DR1 Spectral All-Sky Cube <a href="https://doi.org/10.26131/IRSA679" target="_blank" rel="noopener noreferrer">doi:10.26131/IRSA679</a>. Doré et al. 2014, arXiv:1412.4872.</li>
+        <li><strong>IRSA</strong>: this research has made use of the NASA/IPAC Infrared Science Archive, which is funded by NASA and operated by the California Institute of Technology.</li>
+        <li><strong>Gaia</strong>: this work has made use of data from the ESA mission Gaia, processed by the Gaia Data Processing and Analysis Consortium (DPAC), funded by national institutions, in particular those participating in the Gaia Multilateral Agreement. Gaia Collaboration 2016, A&amp;A 595, A1; 2023, A&amp;A 674, A1.</li>
+        <li><strong>CatWISE2020 / WISE / NEOWISE</strong>: Marocco et al. 2021, ApJS 253, 8; WISE (UCLA and JPL/Caltech) and NEOWISE (JPL/Caltech and the University of Arizona), funded by NASA.</li>
+        <li><strong>JPL Solar System Dynamics</strong>: small-body identification (sb_ident), JPL/Caltech.</li>
+        <li><strong>CDS, Strasbourg</strong>: SIMBAD via Sesame (Wenger et al. 2000, A&amp;AS 143, 9), used only when you choose to resolve a name; VizieR (Ochsenbein et al. 2000, A&amp;AS 143, 23) catalogue VI/49, IAU constellation boundaries (Davenhall &amp; Leggett 1989).</li>
+        <li><strong>HiPS</strong>: Fernique et al. 2015, A&amp;A 578, A114. <strong>Software</strong>: Astropy (Astropy Collaboration 2013, 2018, 2022), NumPy (Harris et al. 2020), SciPy (Virtanen et al. 2020).</li>
+      </ul>
+      <p>HEIMDALL's code is MIT-licensed; third-party data stay under their providers' terms. Full list: CREDITS.md in the repository.</p>
+    </details>
   </main>
   <div id="announcer" class="visually-hidden" aria-live="polite"></div>
   <dialog id="dialog" aria-labelledby="dialog-title"><div class="dialog-header"><h2 id="dialog-title"></h2><button id="close-dialog" type="button" class="quiet">Close</button></div><div id="dialog-content"></div></dialog>

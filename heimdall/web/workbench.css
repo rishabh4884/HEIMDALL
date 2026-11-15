@@ -425,3 +425,16 @@ details.limits .field-grid { grid-template-columns: repeat(2, 1fr); }
 .journey-n { flex: 0 0 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; background: var(--accent); color: #fff; font-weight: 700; font-size: .8rem; }
 .journey-steps p { font-size: .85rem; color: var(--muted); margin-top: 1px; }
 @media (max-width: 720px) { .judge { flex-direction: column; align-items: stretch; } .judge-actions { align-items: stretch; } }
+/* General capability leads; the stored case is a secondary worked example */
+.judge-how { margin-top: 4px; font-size: .88rem; color: #c9dadd; }
+.judge-example { margin-top: 6px; font-size: .9rem; }
+.judge-example > span:first-child { color: #a9c3c8; margin-right: 4px; }
+.judge-search { cursor: pointer; font-size: 1rem; padding: 9px 16px; background: var(--track); border-color: var(--track); color: var(--navy); font-weight: 700; }
+.judge-search:hover { background: #8ae6d7; }
+.judge-go.judge-example-go { background: transparent; color: #e8f1f2; border-color: #5b7480; font-size: .9rem; font-weight: 600; padding: 7px 14px; }
+.judge-go.judge-example-go:hover { background: #1c3141; }
+/* Credits and citations */
+.credits { margin: 6px 0 18px; padding: 8px 12px; border: 1px solid var(--rule); border-radius: 6px; background: var(--surface); font-size: .8rem; color: var(--muted); }
+.credits summary { cursor: pointer; font-weight: 650; color: var(--ink); }
+.credits ul { margin: 6px 0; padding-left: 18px; display: grid; gap: 3px; }
+.credits p { margin-top: 6px; }

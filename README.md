@@ -120,6 +120,10 @@ python3 -m unittest discover -s tests -t .
 | `docs/EXECUTION_LEDGER.md`, `docs/RESUME_BACKEND.md`, `docs/BACKEND_MASTER_SPEC.md`, `docs/DECISIONS.md` | progress record, resume procedure, scope/deferrals, decisions |
 | `docs/OUTPUT_SCHEMA.md` | investigation, sky-map, playback and validation record schemas (the UI contract) |
 
+## Credits and citations
+
+HEIMDALL is an independent NASA Space Apps Challenge project. It is not endorsed by or affiliated with NASA, JPL, Caltech/IPAC, ESA or CDS. It uses data products from SPHEREx (a joint project of JPL and Caltech, funded by NASA) through the NASA/IPAC Infrared Science Archive. It also uses ESA Gaia DR3, CatWISE2020, JPL Solar System Dynamics, CDS SIMBAD/Sesame and VizieR, and Astropy, NumPy and SciPy. [`CREDITS.md`](CREDITS.md) gives the required acknowledgement texts, dataset DOIs and literature citations; the workbench footer repeats them. The MIT license covers HEIMDALL's own code only; third-party data stay under their providers' terms and none are committed here.
+
 ## Secrets
 
 - Credentials live only in environment variables or a local `.env`, which is
