@@ -121,6 +121,29 @@ class DataService:
         job, _ = self.jobs.submit(KIND_INDEX, {"region": region.to_dict(), "scope": self.cfg.scope}, revive_complete=True)
         return self._wait_and_status(job, wait_s, region=region)
 
+    def coverage(self, region: RegionSpec, *, offset: int = 0, limit: int = 500, wait_s: float = 0.0) -> dict:
+        """Readiness-first coverage for map browsing: observations from the local inventory when the region is indexed (with the index
+        time), otherwise a durable INDEX job (no analysis is ever started). Pagination bounds the response."""
+        st = self.ensure_index(region, wait_s=wait_s)
+        obs = self.observations(region)
+        if obs is None:
+            return st | {"observations": None, "note": "region not indexed yet; this is not 'no observations'"}
+        obs = sorted(obs, key=lambda o: (o.t_min if o.t_min is not None else 0.0, o.obs_id, o.release))
+        limit = max(1, min(int(limit), 2000))
+        offset = max(0, int(offset))
+        per_det: dict[str, int] = {}
+        per_rel: dict[str, int] = {}
+        for o in obs:
+            per_det[str(o.detector)] = per_det.get(str(o.detector), 0) + 1
+            per_rel[o.release] = per_rel.get(o.release, 0) + 1
+        page = [{"obs_id": o.obs_id, "release": o.release, "collection": o.collection, "detector": o.detector, "t_min_mjd": o.t_min, "t_max_mjd": o.t_max,
+                 "wavelength_min_um": o.wl_min_um, "wavelength_max_um": o.wl_max_um, "footprint": o.footprint, "centre_deg": [o.s_ra, o.s_dec],
+                 "route": o.route, "synthetic": o.synthetic} for o in obs[offset:offset + limit]]
+        sync = self.inventory.covering_sync(region, self.cfg.scope)
+        return st | {"n_observations": len(obs), "per_detector": per_det, "per_release": per_rel, "offset": offset, "limit": limit,
+                     "observations": page, "index_as_of": sync["completed_at"] if sync is not None else None,
+                     "note": "local inventory (cached archive answers as of index_as_of), not a live query; rendering coverage does not run any analysis"}
+
     def _manifest_if_ready(self, plan: ProductPlan, region: RegionSpec | None, request: dict | None, payload: dict) -> dict | None:
         """A frozen manifest if every product is verified locally, or if the only missing ones were quarantined as invalid by a COMPLETE job
         (they are then excluded and listed in the manifest; the analysis never sees them)."""
@@ -318,23 +341,35 @@ class DataService:
         import os
         if self.offline:
             raise HeimdallError.of(ErrorCode.CONFIG_INVALID, "the data worker cannot run with HEIMDALL_OFFLINE set")
-        started, ticks, jobs_run = now_iso(self.clock()), 0, 0
-        resumed = self.resume()
+        import threading
+        state = {"started_at": now_iso(self.clock()), "ticks": 0, "jobs_run": 0, "open_jobs": None, "busy": False}
+        lock = threading.Lock()
         def beat(stopped: bool = False) -> None:
-            jobs = self.jobs.list()
-            self._write_heartbeat({"pid": os.getpid(), "at": now_iso(self.clock()), "started_at": started, "ticks": ticks, "jobs_run": jobs_run,
-                                   "open_jobs": sum(j["state"] not in TERMINAL for j in jobs), "resumed_at_start": resumed,
-                                   "max_idle_s": max_idle_s, "stopped": stopped})
-        while not stop.is_set() and (max_ticks is None or ticks < max_ticks):
-            ran = self.tick(max_seconds=tick_budget_s)
-            ticks, jobs_run = ticks + 1, jobs_run + len(ran)
-            beat()
-            if not ran:
-                nxt = self._next_wake()
-                wait = max_idle_s if nxt is None else min(max_idle_s, max(0.2, (nxt - self.clock()).total_seconds()))
-                stop.wait(wait)
-        beat(stopped=True)
-        return {"ticks": ticks, "jobs_run": jobs_run, "resumed": resumed, "stopped_gracefully": True}
+            with lock:  # the heartbeat never touches the database, so it cannot contend with the job being run
+                self._write_heartbeat({"pid": os.getpid(), "at": now_iso(self.clock()), **state, "max_idle_s": max_idle_s, "stopped": stopped})
+        beat()
+        resumed = self.resume()
+        state["resumed_at_start"] = resumed
+        done = threading.Event()
+        def pulse() -> None:  # liveness while a long bounded job step runs
+            while not done.wait(max(1.0, min(max_idle_s, 15.0))):
+                beat()
+        threading.Thread(target=pulse, name="heimdall-heartbeat", daemon=True).start()
+        try:
+            while not stop.is_set() and (max_ticks is None or state["ticks"] < max_ticks):
+                state["busy"] = True
+                ran = self.tick(max_seconds=tick_budget_s)
+                state.update(busy=False, ticks=state["ticks"] + 1, jobs_run=state["jobs_run"] + len(ran),
+                             open_jobs=sum(j["state"] not in TERMINAL for j in self.jobs.list()))
+                beat()
+                if not ran:
+                    nxt = self._next_wake()
+                    wait = max_idle_s if nxt is None else min(max_idle_s, max(0.2, (nxt - self.clock()).total_seconds()))
+                    stop.wait(wait)
+        finally:
+            done.set()
+            beat(stopped=True)
+        return {"ticks": state["ticks"], "jobs_run": state["jobs_run"], "resumed": resumed, "stopped_gracefully": True}
 
     def run_job(self, job_id: str, budget_s: float | None = None) -> dict:
         job = self.jobs.get(job_id)

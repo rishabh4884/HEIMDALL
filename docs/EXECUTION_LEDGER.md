@@ -18,8 +18,8 @@ requirement IDs, deferrals). The requirement-to-code-to-test-to-evidence matrix 
 
 | ID | Milestone | Why it matters for the demo | State |
 |---|---|---|---|
-| M1 | Ledger/plan docs; resolve `must_resubmit` vs deadline contradiction (service-owned recovery); long-running worker with heartbeat, graceful stop, deployment examples | Spec §7: a queue that only moves when someone runs a command is not automatic; `must_resubmit:false` was untrue after a deadline | done (see below) |
-| M2 | Stdlib HTTP JSON transport over `Engine` (status, targets, submit/reconnect, results, jobs, cancel, coverage from the local index) with bounded inputs | Frontend integration tonight needs a transport; none existed | planned |
+| M1 | Ledger/plan docs; resolve `must_resubmit` vs deadline contradiction (service-owned recovery); long-running worker with heartbeat, graceful stop, deployment examples | Spec §7: a queue that only moves when someone runs a command is not automatic; `must_resubmit:false` was untrue after a deadline | done, pushed `c4a4751` |
+| M2 | Stdlib HTTP JSON transport over `Engine` (status, targets, submit/reconnect, results, jobs, cancel, coverage from the local index) with bounded inputs | Frontend integration tonight needs a transport; none existed | done (see below) |
 | M3 | Live/cached verification of the end-to-end path through the service (one real workflow; offline repeat) | DoD 3/4 | planned |
 | M4 | NASA target records: honesty review of saved JSON, regenerate matrix from saved JSON only, acceptance doc | DoD 5/6 | planned |
 | M5 | Full suite, diff review, handoff (`docs/FRONTEND_HANDOFF.md`), push | DoD 8/9 | planned |
@@ -38,7 +38,18 @@ requirement IDs, deferrals). The requirement-to-code-to-test-to-evidence matrix 
   request, window not extended by failed recovery attempts, expiry -> `must_resubmit: true`, cancel -> `true`, worker resumes a
   lease-expired job + heartbeat + graceful stop, offline process refuses to be a worker).
 - Scientific scope: none (operational only).
-- Commit: recorded after push below.
+- Commit: `c4a4751` pushed to `origin/backend/submission-2026-11-15` (verified with `git ls-remote`). No CI exists.
+
+### M2 — HTTP transport, readiness-first coverage, worker heartbeat thread (REQ-029, S-18)
+
+- Files: `heimdall/server.py` (new), `heimdall/__main__.py` (`serve [--with-worker]`), `heimdall/dataservice/service.py` (`coverage`;
+  heartbeat pulse thread so a long job step does not look like a dead worker), `heimdall/targets/prepare.py` + `heimdall/api.py`
+  (`analyse_inline=False`: requests never compute inline), `tests/test_server.py` (new, 7), `tests/test_dataservice_targets.py` (+1),
+  `docs/FRONTEND_HANDOFF.md` (new), README and `docs/UI_BACKEND_REFERENCE.md` pointers, REQ-029.
+- Schema: new contract `heimdall.http/1.0` (transport envelope only; result and status schemas unchanged).
+- Tests: `python3 -W error -m unittest discover -s tests -t .` -> 482 OK (5 live skipped).
+- Live check in progress at commit time: coordinate request `job:target_investigation:c03487f9482a` (RA 150.1, Dec 2.2, VARIABLE_STAR,
+  8 observations) submitted 07:53:30Z, worker pid 89947 (`data worker`); evidence `.heimdall/verification/2026-11-15-submission/`.
 
 ## Deferred (explicitly out of today's scope; see `docs/BACKEND_MASTER_SPEC.md` for entry points)
 
@@ -47,4 +58,4 @@ All-sky metadata crawl and mirror (spec §8–9), new ML models (§16), per-dete
 
 ## Active jobs / workers
 
-None started by this run so far. Inspect safely: `python3 -m heimdall data jobs`, `python3 -m heimdall data status` (read-only).
+Worker pid 89947 (`python3 -m heimdall data worker --max-idle 10`, started 07:53Z; stop with `kill -TERM 89947`). Job `job:target_investigation:c03487f9482a`. Inspect safely: `python3 -m heimdall data jobs`, `python3 -m heimdall data status` (read-only).

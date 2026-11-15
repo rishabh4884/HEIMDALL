@@ -171,12 +171,13 @@ class Engine:
         from .targets.investigate import TargetOptions, investigate_target
         spec = self._target_spec(ref, ra, dec, category)
         wait_s = float(options.pop("wait_s", 0.0) or 0.0)
+        analyse_inline = bool(options.pop("analyse_inline", True))
         opts = TargetOptions(**{k: v for k, v in options.items() if v is not None})
         if source_id == "irsa-spherex":
             # Readiness-first: the live archive is never on this call's critical path. Ready -> result now; otherwise a durable job that owns the retries.
             from .targets import prepare
             return prepare.request_investigation(self.data_service(source_id), spec, opts, settings=self.settings, config=self.config, registry=self.validation,
-                                                 store=self.store, wait_s=wait_s, progress=progress)
+                                                 store=self.store, wait_s=wait_s, progress=progress, analyse_inline=analyse_inline)
         return investigate_target(spec, source=self.source(source_id, local_root), settings=self.settings, config=self.config, registry=self.validation,
                                   store=self.store, options=opts, progress=progress, cancel=cancel)
 

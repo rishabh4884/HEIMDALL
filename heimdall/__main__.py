@@ -206,6 +206,10 @@ def _parser() -> argparse.ArgumentParser:
     s = sub.add_parser("cache", help="list or clear cached products")
     s.add_argument("action", choices=["list", "clear"])
     s.add_argument("--older-than-days", type=float)
+    s = sub.add_parser("serve", help="HTTP JSON API for the frontend (readiness-first; see docs/FRONTEND_HANDOFF.md)")
+    s.add_argument("--host", default="127.0.0.1")
+    s.add_argument("--port", type=int, default=8765)
+    s.add_argument("--with-worker", action="store_true", help="also run the data worker in this process (otherwise run `data worker` separately)")
     s = sub.add_parser("demo", help="SYNTHETIC end-to-end demonstration through the real pipeline")
     s.add_argument("--out", type=Path)
     s.add_argument("--no-validate", action="store_true")
@@ -219,6 +223,10 @@ def _run(args) -> int:
     from .pipeline.runner import InvestigationRequest
 
     cfg_path = getattr(args, "config", None)
+    if args.command == "serve":
+        from .server import serve
+        serve(lambda: Engine.from_environment(_env_file()), host=args.host, port=args.port, with_worker=args.with_worker)
+        return 0
     engine = Engine.from_environment(_env_file(), cfg_path if args.command == "investigate" else None)
     if args.command == "sources":
         _print(engine.sources(), args.json)

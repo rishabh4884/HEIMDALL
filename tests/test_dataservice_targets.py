@@ -151,6 +151,19 @@ class SyntheticTargetFlowTests(unittest.TestCase):
         self.assertEqual(r["blind_pipeline"]["status"], "NOT_RUN")
 
 
+    def test_5_transport_mode_defers_computation_to_a_worker_even_when_data_are_local(self):
+        self.settle()
+        opts3 = TargetOptions(max_observations=24, detectors=(1, 2), cutout_size_deg=0.15, context=False, blind_pipeline=False, max_seconds=900.0)
+        a = prepare.request_investigation(self.svc, self.spec, opts3, analyse_inline=False, **self.kw)
+        self.assertNotIn("investigation_id", a)  # acknowledged quickly with a job; nothing computed in the request
+        self.assertEqual(a["readiness"], "PREPARING")
+        self.settle()
+        done = prepare.investigation_status(self.svc, a["job"]["job_id"])
+        self.assertIn("investigation_id", done)
+        again = prepare.request_investigation(self.svc, self.spec, opts3, analyse_inline=False, **self.kw)
+        self.assertEqual(again["investigation_id"], done["investigation_id"])  # stored identical result returned at once
+
+
 class EnginePreparationTests(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())

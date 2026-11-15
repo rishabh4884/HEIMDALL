@@ -3,6 +3,8 @@
 Everything the UI needs is already computed. The UI must **display** these structures and must not recompute significances, statuses, hypotheses,
 positions or uncertainties. Field-level detail: `docs/OUTPUT_SCHEMA.md`. Method limits: `docs/SCIENCE_METHODS.md`, `docs/PROVISIONAL.md`.
 
+HTTP transport and the readiness-first submission flow (target investigations): `docs/FRONTEND_HANDOFF.md`.
+
 ## Entry points (Python: `heimdall.api.Engine`)
 
 | Call | Returns |

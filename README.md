@@ -101,6 +101,8 @@ python3 -m unittest discover -s tests -t .
 | `docs/USAGE.md` | setup, CLI reference, configuration, walkthrough |
 | `docs/NASA_TARGETS.md`, `docs/NASA_TARGET_MATRIX.md`, `docs/NASA_ACCEPTANCE.md`, `docs/REQUIREMENTS_LEDGER.md` | target investigations: method, results, acceptance scenarios, traceability |
 | `docs/DATA_SERVICE.md` | readiness-first SPHEREx data service: inventory, verified store, durable jobs/retries, worker, freshness, retention, operator workflow |
+| `docs/FRONTEND_HANDOFF.md` | HTTP JSON API (`python3 -m heimdall serve`), submission/polling flow, result fields to display |
+| `docs/EXECUTION_LEDGER.md`, `docs/RESUME_BACKEND.md`, `docs/BACKEND_MASTER_SPEC.md`, `docs/DECISIONS.md` | progress record, resume procedure, scope/deferrals, decisions |
 | `docs/OUTPUT_SCHEMA.md` | investigation, sky-map, playback and validation record schemas (the UI contract) |
 
 ## Secrets

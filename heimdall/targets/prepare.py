@@ -45,8 +45,10 @@ def _stored_result(service: DataService, key: str) -> dict | None:
     return json.loads(Path(r["saved_to"]).read_text(encoding="utf-8"))
 
 
-def advance(service: DataService, spec: TargetSpec, opts: TargetOptions, *, settings, config, registry, store, online: bool, progress=None) -> dict:
-    """One non-blocking step. Returns {"state": "DONE", "result": ...} or {"state": "WAIT"|<terminal readiness>, ...}. Online = a worker may use the network."""
+def advance(service: DataService, spec: TargetSpec, opts: TargetOptions, *, settings, config, registry, store, online: bool, progress=None,
+            analyse: bool = True) -> dict:
+    """One non-blocking step. Returns {"state": "DONE", "result": ...} or {"state": "WAIT"|<terminal readiness>, ...}. Online = a worker may use the network.
+    ``analyse=False``: if every input is local but no stored identical result exists, return WAIT(analysis) instead of computing inline."""
     cfg_settings = settings if online else _offline(settings)
     gaia = CachedService("gaia", cfg_settings)
     catwise = CachedService("catwise", cfg_settings)
@@ -115,6 +117,8 @@ def advance(service: DataService, spec: TargetSpec, opts: TargetOptions, *, sett
     prior = _stored_result(service, key)
     if prior is not None:
         return {"state": "DONE", "result": prior, "manifest": manifest, "reused": True}
+    if not analyse:
+        return {"state": "WAIT", "waiting_on": "analysis", "child": None, "detail": "all inputs are verified locally; the analysis is queued for a worker"}
     res = investigate_target(spec, source=LocalStoreSource(service, manifest), settings=cfg_settings, config=config, registry=registry, store=store, options=opts,
                              progress=progress, input_manifest=manifest)
     if res.get("saved_to"):
@@ -128,9 +132,11 @@ def _synthetic(by_id: dict) -> bool:
 
 
 def request_investigation(service: DataService, spec: TargetSpec, opts: TargetOptions, *, settings, config, registry, store, wait_s: float = 0.0,
-                          progress=None) -> dict:
-    """The user-facing entry point. Returns the completed investigation or a durable job reference; never an archive exception."""
-    step = advance(service, spec, opts, settings=settings, config=config, registry=registry, store=store, online=False, progress=progress)
+                          progress=None, analyse_inline: bool = True) -> dict:
+    """The user-facing entry point. Returns the completed investigation or a durable job reference; never an archive exception.
+    ``analyse_inline=False`` (HTTP transport): only a stored identical result is returned immediately; any computation goes to a worker job."""
+    step = advance(service, spec, opts, settings=settings, config=config, registry=registry, store=store, online=False, progress=progress,
+                   analyse=analyse_inline)
     if step["state"] == "DONE":
         out = step["result"]
         out["data_status"] = {"readiness": Readiness.READY.value, "served_from": "verified local data (no archive request)", "manifest_id": (step.get("manifest") or {}).get("manifest_id")}
