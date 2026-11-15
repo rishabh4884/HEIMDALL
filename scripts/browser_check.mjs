@@ -12,6 +12,7 @@ const arg = (k, d) => { const i = process.argv.indexOf(k); return i > 0 ? proces
 const BASE = arg("--base", "http://127.0.0.1:8777");
 const OUT = arg("--out", mkdtempSync(join(tmpdir(), "heimdall-browser-")));
 const CHROME = arg("--chrome", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
+const WRITES = process.argv.includes("--writes"); // write-path checks (review notes); use only against a throwaway state
 mkdirSync(OUT, { recursive: true });
 const port = 9300 + Math.floor(Math.random() * 400);
 const chrome = spawn(CHROME, ["--headless=new", `--remote-debugging-port=${port}`, `--user-data-dir=${mkdtempSync(join(tmpdir(), "hcdp-"))}`,
@@ -36,7 +37,8 @@ async function connect() {
     else if (msg.method === "Runtime.exceptionThrown") problems.push(`exception: ${msg.params.exceptionDetails.exception?.description || msg.params.exceptionDetails.text}`);
     else if (msg.method === "Runtime.consoleAPICalled" && ["error", "assert"].includes(msg.params.type)) problems.push(`console.${msg.params.type}: ${msg.params.args.map((a) => a.value ?? a.description).join(" ")}`);
     else if (msg.method === "Log.entryAdded" && msg.params.entry.level === "error" && !/\/sky\/spherex\/|favicon\.ico/.test(msg.params.entry.url || "")
-      && !(/status of 404/.test(msg.params.entry.text) && /\/api\/v1\//.test(msg.params.entry.url || ""))) problems.push(`log: ${msg.params.entry.text} ${msg.params.entry.url || ""}`);
+      && !(/status of 404/.test(msg.params.entry.text) && /\/api\/v1\//.test(msg.params.entry.url || ""))
+      && !(/status of 503/.test(msg.params.entry.text) && /\/api\/v1\/resolve/.test(msg.params.entry.url || ""))) problems.push(`log: ${msg.params.entry.text} ${msg.params.entry.url || ""}`);
   };
 }
 const send = (method, params = {}) => new Promise((resolve, reject) => { const id = ++seq; pending.set(id, { resolve, reject }); ws.send(JSON.stringify({ id, method, params })); });
@@ -254,6 +256,12 @@ try {
   await check("saved field run: candidates, footprints, synthetic watermark when synthetic", async () => {
     const runs = await (await fetch(`${BASE}/api/v1/runs`)).json();
     const real = runs.runs.find((r) => r.data_origin === "REAL");
+    if (!real) {
+      await go("/");
+      await click('[data-library="runs"]');
+      await waitFor(`document.querySelector("#library").textContent.includes("No saved field runs")`);
+      return "no saved runs on this server: the library says so";
+    }
     const syn = runs.runs.find((r) => r.data_origin === "SYNTHETIC");
     await go(`/?run=${real.run_id}`);
     await waitFor(`document.querySelector(".quick-answer")?.textContent.includes("candidate")`);
@@ -308,7 +316,7 @@ try {
   });
   await check("worker/offline banner and run options follow /health and /capabilities", async () => {
     const health = await (await fetch(`${BASE}/api/v1/health`)).json();
-    await go("/?target=NASA-04");
+    await go("/?target=NASA-02");
     const banner = await text("#worker-banner");
     if (health.offline) assert(banner.includes("Offline mode"), `offline banner missing: ${banner}`);
     else if (!health.worker?.running) assert(banner.includes("No data worker"), "absent-worker banner missing");
@@ -322,6 +330,75 @@ try {
     await waitFor(`document.querySelector("#record").textContent.includes("Not available in this backend")`);
     assert((await text("#record")).includes("Period search"), "not_available capabilities not listed");
     return `${health.offline ? "offline" : "online"}, worker ${health.worker?.running ? "running" : "absent"}, ${disabled} disabled options`;
+  });
+  await check("accessibility: every control has an accessible name; text contrast ≥ 4.5:1", async () => {
+    await go("/?target=NASA-02");
+    await waitFor(`document.querySelector(".status-grid")`);
+    for (const panel of ["investigations", "charts", "twin", "layers"]) { await click(`[data-panel="${panel}"]`); await sleep(400); }
+    const res = await evaluate(`
+      const named = (el) => (el.getAttribute("aria-label") || el.getAttribute("aria-labelledby") || el.textContent.trim() || el.title || (el.id && document.querySelector('label[for="' + el.id + '"]')) || el.closest("label") || el.placeholder);
+      const visible = (el) => el.offsetParent !== null || el.getClientRects().length;
+      const unnamed = [...document.querySelectorAll("button, input, select, textarea, [role=button], [role=slider], [role=listbox], [role=option]")].filter((el) => visible(el) && !named(el)).map((el) => el.outerHTML.slice(0, 80));
+      const lum = (c) => { const m = c.match(/[0-9.]+/g).map(Number); const f = (v) => (v /= 255) <= .03928 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4; return .2126 * f(m[0]) + .7152 * f(m[1]) + .0722 * f(m[2]); };
+      const bg = (el) => { for (let e = el; e; e = e.parentElement) { const c = getComputedStyle(e).backgroundColor; const m = c.match(/[0-9.]+/g); if (m && (m.length < 4 || Number(m[3]) > .5)) return c; } return "rgb(255,255,255)"; };
+      const low = [];
+      for (const el of document.querySelectorAll(".compact, .chip, .lane-label, .lane-label small, .band-note, .map-footer, .ribbon-controls, .gap small, .facts dt, .library-item small, th, .record-kind, .image-credit, #subtitle, .status-grid span")) {
+        if (!visible(el) || !el.textContent.trim()) continue;
+        const fg = getComputedStyle(el).color, back = bg(el);
+        if (!fg.startsWith("rgb") || !back.startsWith("rgb")) { low.push("unparsed " + el.className + " " + fg + " on " + back); continue; }
+        const a = lum(fg), b = lum(back); const r = (Math.max(a, b) + .05) / (Math.min(a, b) + .05);
+        if (r < 4.5) low.push(el.className + " " + r.toFixed(2));
+      }
+      return { unnamed, low: [...new Set(low)] };`);
+    assert(!res.unnamed.length, `unnamed controls: ${res.unnamed.slice(0, 4).join(" | ")}`);
+    assert(!res.low.length, `low contrast: ${res.low.slice(0, 6).join(", ")}`);
+    return "all visible controls named; sampled text ≥ 4.5:1";
+  });
+  await check("large dataset: the real SkyMap draws 20 000 synthetic points within budget (synthetic load test)", async () => {
+    const r = await evaluate(`const { SkyMap } = await import("/sky.js");
+      const c = document.createElement("canvas"); c.style.cssText = "position:fixed;left:0;top:0;width:1200px;height:700px"; document.body.append(c);
+      const tip = document.createElement("div");
+      const m = new SkyMap(c, () => {}, () => {}, tip, () => {});
+      m.survey.visible = false;
+      const pts = Array.from({ length: 20000 }, (_, i) => ({ ra: 150 + (i % 200) * .0005, dec: 2 + Math.floor(i / 200) * .0005, id: "s" + i, kind: "detection" }));
+      m.view = { ra: 150.05, dec: 2.05, span: .12 };
+      m.setData({ detections: pts }, { detections: true }, null);
+      const t = []; for (let k = 0; k < 10; k++) { const t0 = performance.now(); m.draw(); t.push(performance.now() - t0); }
+      c.remove(); t.sort((a, b) => a - b); return { median: t[5], max: t[9], hits: m.points.length };`);
+    assert(r.median < 50, `draw median ${r.median} ms`);
+    return `20 000 points: median ${r.median.toFixed(1)} ms, max ${r.max.toFixed(1)} ms per full redraw, ${r.hits} hit targets`;
+  });
+  await check("search offers explicit name resolution with disclosure", async () => {
+    await go("/");
+    await evaluate(`const i = document.querySelector("#omni-input"); i.value = "Vega"; i.dispatchEvent(new Event("input"));`);
+    await waitFor(`[...document.querySelectorAll("#omni-list li")].some(li => li.textContent.includes("CDS Sesame"))`);
+    const health = await (await fetch(`${BASE}/api/v1/health`)).json();
+    await evaluate(`[...document.querySelectorAll("#omni-list li")].find(li => li.textContent.includes("CDS Sesame")).dispatchEvent(new MouseEvent("mousedown", {bubbles: true}))`);
+    if (health.offline) {
+      await waitFor(`document.querySelector("#omni-error").textContent.includes("unavailable")`);
+      return "offline: refused without network, explained";
+    }
+    await waitFor(`location.search.includes("field=279.2") || document.querySelector("#omni-error").textContent.includes("unavailable")`, 15000);
+    return (await evaluate(`return location.search.includes("field=279.2")`)) ? "Vega resolved → coverage view at its position" : "resolver unreachable: explained";
+  });
+  await check("guided demonstration autoplays and stops on any input", async () => {
+    await click("#show-guide");
+    await waitFor(`document.querySelector('[data-action="tour-autoplay"]')`);
+    await click('[data-action="tour-autoplay"]');
+    await waitFor(`document.querySelector("#notice").textContent.includes("Demonstration 1/")`);
+    await evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", {key: "x"})); return true`);
+    await waitFor(`document.querySelector("#notice").textContent.includes("Demonstration stopped")`);
+    return "ok";
+  });
+  if (WRITES) await check("review notes: saved, labelled as human notes, persisted across reload", async () => {
+    await go("/?target=NASA-02&tab=history");
+    await waitFor(`document.querySelector("#note-form")`);
+    await evaluate(`const f = document.querySelector("#note-form"); f.text.value = "Browser check note: registration caveat reviewed."; f.author.value = "browser-check"; f.requestSubmit(); return true`);
+    await waitFor(`document.querySelector(".note")?.textContent.includes("Browser check note")`);
+    await go("/?target=NASA-02&tab=history");
+    await waitFor(`document.querySelector(".note")?.textContent.includes("Browser check note")`);
+    assert((await text(".note")).includes("Human note"), "note not labelled");
+    return "persisted";
   });
   await check("guided tour is skippable and opens real records", async () => {
     await click("#show-guide");

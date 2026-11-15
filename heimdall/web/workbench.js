@@ -112,7 +112,7 @@ async function loadRecord(record, { camera = null, fromHistory = false, push = f
   const gen = ++state.gen;
   stopPlayback();
   Object.assign(state, { record, doc: null, claims: null, patterns: null, versions: null, attempt: null, map: null, coverage: null, panelErrors: {},
-    region: null, trace: [], traceIndex: -1, frame: fromHistory ? state.frame : null, loading: Boolean(record), error: "" });
+    region: null, notes: null, trace: [], traceIndex: -1, frame: fromHistory ? state.frame : null, loading: Boolean(record), error: "", rowLimit: 400 });
   if (!fromHistory) { state.selection = null; state.tab = "answer"; }
   if (push) syncUrl(true);
   render();
@@ -127,6 +127,7 @@ async function loadRecord(record, { camera = null, fromHistory = false, push = f
       state.map = map.value || null;
       if (map.reason) state.panelErrors.map = describe(map.reason).message;
       state.chart = "observations";
+      loadNotes(gen);
       if (!state.runs.length) client.get("/runs").then((r) => { state.runs = list(r.runs); }).catch(() => {});
     } else if (record.kind === "field") {
       state.chart = "observations";
@@ -152,6 +153,7 @@ async function loadRecord(record, { camera = null, fromHistory = false, push = f
       state.claims = claims.value || null;
       state.patterns = patterns.value || null;
       if (claims.reason) state.panelErrors.claims = describe(claims.reason).message;
+      loadNotes(gen);
       if (patterns.reason) state.panelErrors.patterns = describe(patterns.reason).message;
       state.chart = list(state.doc.analyses?.motion?.track).length ? "motion" : list(state.doc.analyses?.variability?.light_curve).length ? "flux" : "observations";
     }
@@ -166,6 +168,37 @@ async function loadRecord(record, { camera = null, fromHistory = false, push = f
   } finally {
     if (live()) { state.loading = false; render(); }
   }
+}
+
+function noteRecord() { return state.doc?.investigation_id || state.doc?.run_id || null; }
+
+async function loadNotes(gen = state.gen) {
+  const record = noteRecord();
+  if (!record) return;
+  try {
+    const data = await client.get("/notes", { params: { record } });
+    if (gen !== state.gen) return;
+    state.notes = data;
+    delete state.panelErrors.notes;
+  } catch (e) {
+    if (gen !== state.gen) return;
+    state.panelErrors.notes = describe(e).message;
+  }
+  if (state.tab === "history" && !state.trace[state.traceIndex]) renderInspector();
+}
+
+async function addNote(form) {
+  const fd = new FormData(form);
+  const text = String(fd.get("text") || "").trim();
+  const err = form.querySelector(".field-error");
+  if (!text) { err.textContent = "Write the note first."; return; }
+  const about = fd.get("about") && state.selection ? `${state.selection.kind}:${state.selection.id}` : undefined;
+  try {
+    await client.post("/notes", { record: noteRecord(), text, author: String(fd.get("author") || ""), about, supersedes: fd.get("supersedes") || undefined });
+    announce("Review note saved.");
+    await loadNotes();
+    renderInspector();
+  } catch (e) { err.textContent = `${describe(e).title}: ${describe(e).message}. Your text was kept.`; }
 }
 
 function openRecord(kind, id, extra = {}) {
@@ -835,6 +868,29 @@ const TOUR = [
   { title: "6 · Compare images", text: "Compare images aligns two exact cached products on one north-up grid. Difference mode is offered only when the server marks the pair comparable (same detector, wavelength within tolerance).", run: () => { openRecord("target", "NASA-02").then(() => openPanel("twin")); } },
 ];
 
+// Interruptible demonstration: advances through the real-record tour; any key, pointer or wheel input stops it.
+function autoplayTour() {
+  $("dialog").close();
+  let step = 0;
+  const stop = () => {
+    clearTimeout(state.tourTimer);
+    state.tourTimer = null;
+    for (const t of ["keydown", "pointerdown", "wheel"]) removeEventListener(t, stop, true);
+    notice("Demonstration stopped. Everything stays where it is; press Guide to resume.");
+  };
+  for (const t of ["keydown", "pointerdown", "wheel"]) addEventListener(t, stop, true);
+  const next = async () => {
+    const s = TOUR[step];
+    notice(`Demonstration ${step + 1}/${TOUR.length} · ${s.title}: ${s.text} (any key, click or scroll stops it)`);
+    announce(`${s.title}. ${s.text}`);
+    await s.run();
+    step++;
+    if (step < TOUR.length) state.tourTimer = setTimeout(next, 9000);
+    else { for (const t of ["keydown", "pointerdown", "wheel"]) removeEventListener(t, stop, true); state.tourTimer = null; }
+  };
+  next();
+}
+
 function guide(step = 0) {
   const s = TOUR[step];
   try { localStorage.setItem("heimdall.tour.seen", "1"); } catch { /* optional */ }
@@ -842,7 +898,8 @@ function guide(step = 0) {
     <div class="form-actions"><button type="button" class="quiet" data-tour="${step - 1}" ${step === 0 ? "disabled" : ""}>Back</button>
     <button type="button" class="primary" data-tour-go="${step}">Show me</button>
     <button type="button" class="quiet" data-tour="${step + 1}" ${step === TOUR.length - 1 ? "disabled" : ""}>Next</button>
-    <button type="button" class="text-button" data-tour="end">Skip tour</button></div>`, "tour");
+    <button type="button" class="text-button" data-tour="end">Skip tour</button>
+    <button type="button" class="quiet" data-action="tour-autoplay">Autoplay all steps (stops on any input)</button></div>`, "tour");
 }
 
 // ---------------------------------------------------------------- export and sharing
@@ -890,7 +947,8 @@ function omniResults(text) {
   if (!pos.error) out.push({ kind: "position", id: `${pos.ra},${pos.dec}`, label: `Go to RA ${pos.ra.toFixed(5)}, Dec ${pos.dec.toFixed(5)}` });
   for (const tg of state.targets) if (`${tg.name} ${tg.target_id}`.toLowerCase().includes(t)) out.push({ kind: "target", id: tg.target_id, label: `${tg.name} (${tg.target_id})` });
   for (const r of state.runs) if (r.run_id.toLowerCase().includes(t)) out.push({ kind: "run", id: r.run_id, label: `Saved field ${r.run_id}` });
-  return out.slice(0, 8);
+  if (!id && pos.error && t.length >= 2) out.push({ kind: "resolve", id: text.trim(), label: `Resolve “${text.trim()}” with CDS Sesame (sends this name to CDS)${state.health?.offline ? " · unavailable offline" : ""}` });
+  return out.slice(0, 9);
 }
 
 function renderOmni() {
@@ -917,6 +975,18 @@ function runOmni(r) {
     return openRecord("field", null, { field: { ra, dec, radius: .05 } });
   }
   if (r.kind === "job") { jobs.track(r.id, { label: "Opened from search" }); return showJobsDialog(); }
+  if (r.kind === "resolve") {
+    $("omni-error").textContent = "Resolving with CDS Sesame…";
+    return client.get("/resolve", { params: { name: r.id } }).then((res) => {
+      $("omni-error").textContent = "";
+      notice(`${res.object || res.query}: ${res.ra_deg.toFixed(5)}, ${res.dec_deg.toFixed(5)} from ${res.resolver} (${res.frame}). A catalogue position for navigation, not a HEIMDALL measurement. Browsing shows coverage only.`);
+      return openRecord("field", null, { field: { ra: res.ra_deg, dec: res.dec_deg, radius: .05 } });
+    }, (e) => {
+      const d = describe(e);
+      $("omni-error").textContent = d.kind === FAILURE.NOT_FOUND ? `No resolver knows “${r.id}”. Try a catalogue designation or coordinates.`
+        : d.kind === FAILURE.OUTAGE ? `Name resolution unavailable: ${d.message}. Coordinates and registered targets still work.` : `${d.title}: ${d.message}`;
+    });
+  }
   if (["observation", "product"].includes(r.kind)) {
     return openTrace("lookup", r.id, { push: false, request: () => client.get("/evidence/lookup", { params: r.kind === "product" ? { sha256: r.id } : { obs_id: r.id } }) });
   }
@@ -966,6 +1036,8 @@ function runAction(el) {
     case "region-dialog": return regionDialog("coverage");
     case "run-dialog": return regionDialog(id);
     case "guide": return guide(0);
+    case "more-rows": state.rowLimit = (state.rowLimit || 400) + 400; return render();
+    case "tour-autoplay": return autoplayTour();
     default: return openTrace(kind, id, { push: kind !== "reference" });
   }
 }
@@ -1101,6 +1173,12 @@ function bind() {
     }
     if (intent === "field") return submit("/runs", field, `Field run at ${pos.ra.toFixed(4)}, ${pos.dec.toFixed(4)} r=${radius}`);
     return submit("/investigations", { ra: pos.ra, dec: pos.dec, category: intent }, `${label(intent)} test at ${pos.ra.toFixed(4)}, ${pos.dec.toFixed(4)}`);
+  });
+  // Forms rendered inside the inspector (review notes) submit here; the dialog has its own handler.
+  $("record").addEventListener("submit", (e) => {
+    if (e.target.id !== "note-form") return;
+    e.preventDefault();
+    addNote(e.target);
   });
   $("omnibox").addEventListener("submit", (e) => { e.preventDefault(); runOmni(state.omni?.[Math.max(0, state.omniIndex ?? 0)]); });
   $("omni-input").addEventListener("input", () => { state.omniIndex = -1; renderOmni(); $("omni-error").textContent = ""; });

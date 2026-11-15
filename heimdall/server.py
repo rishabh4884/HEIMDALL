@@ -189,6 +189,31 @@ class Api:
             if preview is None:
                 raise ApiError(404, "NOT_FOUND", "No displayable, checksum-matched science image is available in this local cache.")
             return 200, preview
+        if route == ("GET", "resolve") and len(p) == 1:
+            from .resolve_notes import ResolveError, resolve_name
+            try:
+                return 200, resolve_name(query.get("name", [""])[0], bool(self.engine.settings.offline))
+            except ResolveError as e:
+                status = {"INPUT_INVALID": 400, "NOT_FOUND": 404, "OFFLINE": 503, "UNREACHABLE": 503, "MALFORMED": 502}[e.kind]
+                raise ApiError(status, "INPUT_INVALID" if status == 400 else "NOT_FOUND" if status == 404 else "UPSTREAM_UNAVAILABLE", str(e)) from None
+        if route in (("GET", "notes"), ("POST", "notes")) and len(p) == 1:
+            from .resolve_notes import ReviewNotes
+            notes = ReviewNotes(Path(self.engine.settings.state_dir))
+            try:
+                if method == "GET":
+                    return 200, notes.list(query.get("record", [""])[0])
+                if not isinstance(body, dict) or set(body) - {"record", "text", "author", "about", "supersedes"}:
+                    raise ValueError("body must be {record, text[, author, about, supersedes]}")
+                rec = str(body.get("record", ""))
+                notes._path(rec)  # format first: a malformed id is a 400, an unknown well-formed one a 404
+                m = RE_INV.match(rec)
+                exists = ((m and (self.targets_dir / m.group(1) / f"{m.group(2)}.json").is_file()) or (RE_TARGET.match(rec) and (self.targets_dir / rec).is_dir())
+                          or (RE_RUN.match(rec) and (Path(self.engine.settings.state_dir) / "runs" / rec / "investigation.json").is_file()))
+                if not exists:
+                    raise ApiError(404, "NOT_FOUND", f"no saved record {rec[:80]} on this server; notes attach only to existing records")
+                return 201, notes.add(body.get("record", ""), body.get("text", ""), body.get("author", ""), body.get("about"), body.get("supersedes"))
+            except ValueError as e:
+                raise ApiError(400, "INPUT_INVALID", str(e)) from None
         if route == ("GET", "evidence") and p == ["evidence", "pair"]:
             from .web_pair import aligned_pair
             a, b = query.get("a", [""])[0], query.get("b", [""])[0]
@@ -526,7 +551,8 @@ def make_handler(api: Api, token: str | None, cors_origin: str | None):
                 status, out = api.handle(method, url.path, parse_qs(url.query, max_num_fields=20), body)
                 self._send(status, out)
             except ApiError as e:
-                self._send(e.status, {"schema": HTTP_SCHEMA, "error": {"code": e.code, "message": e.message}})
+                err = {"code": e.code, "message": e.message} | ({"category": "UPSTREAM_OUTAGE"} if e.status == 503 else {})
+                self._send(e.status, {"schema": HTTP_SCHEMA, "error": err})
             except HeimdallError as e:
                 code = getattr(getattr(e, "code", None), "value", "ERROR")
                 status = {"INPUT_INVALID": 400, "AUTHENTICATION_FAILED": 502, "ACCESS_DENIED": 502, "ARCHIVE_UNREACHABLE": 503,

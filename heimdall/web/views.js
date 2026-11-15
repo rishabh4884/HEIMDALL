@@ -112,10 +112,11 @@ export function evidencePage(state, matches) {
     ${list(doc.evidence).length ? group("Evidence records", table(["Evidence", "Statement", "Group"], doc.evidence.map((e) =>
       [`<button type="button" class="text-button" data-action="reference" data-id="evidence[${h(e.evidence_id)}]">${h(e.evidence_id)}</button>`, h(e.statement || e.name), h(e.dependency_group || "—")]))) : ""}
     ${group(`Observations and measurements (${shown.length} of ${rows.length} shown)`, rows.length && !shown.length ? empty("Every record is hidden by the current filters.") :
-      table(["Observation", "Detector", "MJD", "λ (µm)", "State"], shown.slice(0, 400).map((m) => [
+      table(["Observation", "Detector", "MJD", "λ (µm)", "State"], shown.slice(0, state.rowLimit || 400).map((m) => [
         `<button type="button" class="text-button" data-action="observation" data-id="${h(m.obs_id)}" ${state.selection?.id === m.obs_id ? 'aria-current="true"' : ""}>${h(m.obs_id)}</button>`,
         h(m.detector ?? m.meta?.detector ?? "—"), number(m.mjd ?? m.meta?.mjd_avg ?? m.t_min_mjd, 5), number(m.wavelength_um, 4),
-        h(m.status ?? (m.included == null ? "Indexed" : m.included ? "Included" : "Excluded"))])))}
+        h(m.status ?? (m.included == null ? "Indexed" : m.included ? "Included" : "Excluded"))])) + (shown.length > (state.rowLimit || 400)
+        ? `<p class="compact">${shown.length - (state.rowLimit || 400)} more rows. <button type="button" class="text-button" data-action="more-rows">Show 400 more</button></p>` : ""))}
     ${group("Reproduce", `${manifest ? stack([action("Open frozen input manifest", "manifest", manifest)]) : para("No frozen manifest: this record predates the data service; inputs are identified by product checksums.")}
       ${facts([["Methods version", doc.methods_version], ["Software version", doc.software_version ?? doc.provenance?.software_version], ["Config hash", doc.config_hash], ["Results hash", doc.results_hash]])}
       ${doc.reproduce ? `<pre>${h(doc.reproduce)}</pre>` : ""}`)}`;
@@ -160,12 +161,26 @@ export function deeperPage(state) {
       : para("Capabilities could not be loaded. Composition and thermal interpretation, period search and cross-detector stacking are not offered without them."))}`;
 }
 
+export function notesBlock(state) {
+  const record = state.doc?.investigation_id || state.doc?.run_id;
+  if (!record) return "";
+  const notes = list(state.notes?.notes);
+  return group("Human review notes", `<p class="compact">Annotations by people reviewing this record. They are not claims, verdicts or evidence and change no result. Notes are append-only; a new note can supersede an older one, and both stay visible.</p>
+    ${state.panelErrors.notes ? empty(`Notes unavailable: ${state.panelErrors.notes}`, true) : ""}
+    ${notes.map((n) => `<article class="note${n.superseded ? " superseded" : ""}"><header>${badge("Human note", "note")}${n.superseded ? badge("Superseded", "warn") : ""}<small>${h(n.created_at)}${n.author ? ` · ${h(n.author)}` : ""}${n.about ? ` · about ${h(n.about)}` : ""}</small></header><p>${h(n.text)}</p></article>`).join("") || (state.notes ? para("No review notes yet.") : para("Loading notes…"))}
+    <form id="note-form" class="note-form"><label>Note <textarea name="text" rows="3" maxlength="4000" required></textarea></label>
+      <div class="field-grid"><label>Your name (optional) <input name="author" maxlength="80"></label>
+      ${notes.length ? `<label>Supersedes <select name="supersedes"><option value="">Nothing</option>${notes.map((n) => `<option value="${h(n.note_id)}">${h(n.created_at)} · ${h(n.text.slice(0, 40))}</option>`).join("")}</select></label>` : ""}</div>
+      ${state.selection ? `<label class="inline"><input type="checkbox" name="about" checked> About the current selection (${h(state.selection.kind)} ${h(state.selection.id)})</label>` : ""}
+      <p class="field-error" role="alert"></p><button type="submit" class="quiet">Save note</button></form>`);
+}
+
 export function historyPage(state) {
   const doc = state.doc || {};
   if (doc.run_id) {
     const others = list(state.runs).filter((r) => r.run_id !== doc.run_id);
     return `<h3>Saved field runs</h3>${stack(list(state.runs).map((r) => action(r.run_id, "run", r.run_id, [r.run_id === doc.run_id ? "Viewing" : "", label(r.data_origin), label(r.status?.execution)].filter(Boolean).join(" · "))), "No saved runs.")}
-      ${others.length ? compareForm(doc.run_id, others.map((r) => r.run_id)) : ""}`;
+      ${others.length ? compareForm(doc.run_id, others.map((r) => r.run_id)) : ""}${notesBlock(state)}`;
   }
   const versions = list(state.versions?.versions);
   const current = doc.investigation_id;
@@ -174,7 +189,8 @@ export function historyPage(state) {
     ${stack(versions.map((v) => action(v.investigation_id, "version", v.investigation_id, [v.is_latest_usable ? "Latest usable" : "", v.is_latest_attempt ? "Latest attempt" : "",
       v.investigation_id === current ? "Viewing" : "", v.superseded_by ? `Superseded by ${v.superseded_by}` : "", v.supersession_reason ? `Why: ${v.supersession_reason}` : "",
       `${label(v.status?.execution)} / ${label(v.status?.test_status)}`, v.created_at?.slice(0, 10)].filter(Boolean).join(" · "))), "No saved versions.")}
-    ${versions.length > 1 ? compareForm(current, versions.map((v) => v.investigation_id).filter((x) => x !== current)) : ""}`;
+    ${versions.length > 1 ? compareForm(current, versions.map((v) => v.investigation_id).filter((x) => x !== current)) : ""}
+    ${notesBlock(state)}`;
 }
 
 function compareForm(current, others) {
