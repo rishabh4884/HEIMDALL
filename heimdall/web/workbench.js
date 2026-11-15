@@ -669,6 +669,24 @@ function renderHeader() {
     badge(doc.created_at ? `Saved ${doc.created_at.slice(0, 10)}` : "")].join("") : "";
   $("record-header").innerHTML = `<h2 id="record-title">${h(doc?.investigation_id || doc?.run_id || (r?.kind === "field" ? "Coverage" : "Investigation"))}</h2>`;
   document.title = `${$("title").textContent} · HEIMDALL`;
+  $("judge").hidden = Boolean(r);
+}
+
+// Judge mode: one obvious path from the landing page to the stored NASA-02 result and its evidence journey.
+async function openJudge() {
+  await openRecord("target", "NASA-02");
+  setTab("answer");
+  $("inspector").scrollIntoView({ block: "start", behavior: "smooth" });
+  $("inspector").focus({ preventScroll: true });
+}
+
+async function loadJudgeFacts() {
+  const [doc, claims] = await Promise.all([client.get("/targets/NASA-02"), client.get("/targets/NASA-02/claims")]);
+  const head = list(claims?.claims).find((c) => c.claim_id === claims?.headline_claim);
+  const cov = doc?.coverage || {};
+  if (doc?.data_origin !== "REAL" || !finite(cov.n_measured)) return;
+  const verdict = head?.claim_type === "CONSISTENT_WITH" ? `apparent motion agrees with ${doc.reference?.catalogue?.split(" ")[0] || "the catalogue"}` : label(head?.claim_type || "");
+  $("judge-facts").textContent = ["Real SPHEREx data", `${cov.n_measured} observations`, `${cov.n_epochs} epochs`, verdict].filter(Boolean).join(" · ");
 }
 
 function renderInspector() {
@@ -1038,6 +1056,7 @@ function runAction(el) {
     case "version": close(); return openRecord("version", id);
     case "run": close(); return openRecord("run", id);
     case "tab": return setTab(id);
+    case "judge": close(); return openJudge();
     case "chart": state.chart = id; openPanel("charts"); return renderVisuals();
     case "axis": state.axis = Number(id); return renderVisuals();
     case "fit-evidence": focusField(true); return $("map-heading").scrollIntoView({ block: "nearest" });
@@ -1271,6 +1290,7 @@ async function boot() {
     state.booted = true;
     syncUrl(false);
     document.body.dataset.booted = "1";
+    loadJudgeFacts().catch(() => {});
     let seen = false;
     try { seen = localStorage.getItem("heimdall.tour.seen") === "1"; } catch { seen = true; }
     if (!seen && !location.search) notice("New here? Press Guide for a short tour through real saved results (skippable).");

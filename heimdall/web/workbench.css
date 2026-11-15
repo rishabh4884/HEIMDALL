@@ -402,3 +402,26 @@ details.limits .field-grid { grid-template-columns: repeat(2, 1fr); }
   .ribbon-controls output { flex-basis: 100%; }
   .workspace[data-panel=twin] .twin-panel, .workspace[data-panel=charts] .chart-panel { grid-column: 1; }
 }
+
+/* Judge mode: first-screen explanation and the evidence journey for a real motion result */
+.judge { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-top: 10px; padding: 14px 16px; background: var(--navy); color: #e8f1f2; border-radius: 8px; border-left: 4px solid var(--track); }
+.judge[hidden] { display: none; }
+.judge-kicker { font-size: .8rem; color: #a9c3c8; letter-spacing: .01em; }
+.judge h2 { font-size: 1.15rem; margin-top: 2px; color: #fff; }
+.judge-facts { margin-top: 6px; font-weight: 600; color: var(--track); font-size: .95rem; }
+.judge-caveat { margin-top: 3px; font-size: .8rem; color: var(--measure); }
+.judge-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex-shrink: 0; }
+.judge-actions small { color: #a9c3c8; font-size: .75rem; }
+.judge-go { font-size: 1rem; padding: 9px 16px; background: var(--track); border-color: var(--track); color: var(--navy); font-weight: 700; }
+.judge-go:hover { background: #8ae6d7; }
+.judge-go:focus-visible { outline: 3px solid #fff; outline-offset: 2px; }
+.journey { padding: 12px; margin-bottom: 10px; border: 1px solid var(--rule); border-left: 4px solid var(--accent); border-radius: 6px; background: var(--surface); }
+.journey h3 { font-size: 1rem; }
+.journey-lead { margin-top: 5px; font-size: .97rem; line-height: 1.55; }
+.journey-caveat { margin-top: 5px; font-size: .8rem; color: #644511; background: #fff5db; padding: 4px 8px; border-radius: 4px; }
+.journey-steps { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 8px; }
+.journey-steps li { display: flex; gap: 10px; align-items: flex-start; position: relative; }
+.journey-steps li:not(:last-child)::after { content: ""; position: absolute; left: 11px; top: 26px; bottom: -8px; border-left: 2px solid var(--accent-tint); }
+.journey-n { flex: 0 0 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; background: var(--accent); color: #fff; font-weight: 700; font-size: .8rem; }
+.journey-steps p { font-size: .85rem; color: var(--muted); margin-top: 1px; }
+@media (max-width: 720px) { .judge { flex-direction: column; align-items: stretch; } .judge-actions { align-items: stretch; } }
