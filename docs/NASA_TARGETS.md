@@ -18,7 +18,7 @@ The five targets are configuration (`targets/registry.py`), not code paths: a co
    distance when the parallax is ≥ 1 mas), annual parallax from the Earth's barycentric position, and position/proper-motion covariance.
    Radial velocity is assumed 0 (stated). NASA's WISE 0855 coordinate is *not* assumed current: `seed_position_epoch_check` infers which epoch
    it corresponds to from the CatWISE proper motion and says so as an inference.
-3. **Discovery** (IRSA TAP `spherex.plane`), **selection** (`select_observations`): deterministic, epoch-balanced, per-detector, bounded by
+3. **Discovery** (IRSA SIA2 for current DR1/QR3, bounded fallback to IRSA TAP `spherex.plane`; the route used is saved in `discovery.route`), **selection** (`select_observations`): deterministic, epoch-balanced, per-detector, bounded by
    `--max-observations`; first and last epochs kept. The rule and the counts of what was *not* selected are in the result.
 4. **Retrieval**: IRSA cutout service, cutout side `max(spec, 2 × motion span + 0.04°)` ≤ 0.3°, cache-first, resumable, time-budgeted
    (`--max-seconds`; PARTIAL if exceeded). The cache key includes the cutout centre/size and the archive path (release/version).

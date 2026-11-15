@@ -26,6 +26,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+import random
 import re
 import time
 import urllib.parse
@@ -38,6 +39,7 @@ from ..contracts import (DataOrigin, ErrorCode, ErrorInfo, FailedItem, HeimdallE
                          Provenance, ResultOutcome, SourceProduct, Uncertainty, ValueClass, measured)
 from .cache import ProductCache
 from .http import HttpClient, Transport
+from .resilience import CircuitBreaker
 from .interface import (AccessReport, DataSource, DiscoveryQuery, DiscoveryResult, RetrievalRequest, RetrievalResult,
                         RetrievedProduct, SourceDescription)
 
@@ -62,6 +64,19 @@ def _release_rank(collection: str) -> int:
     m = re.search(r"(qr|dr)(\d+)", collection)
     return (100 if m.group(1) == "dr" else 0) + int(m.group(2)) if m else -1
 TAP_SOURCE = "IRSA TAP (spherex.plane/artifact/observation)"
+SIA_SOURCE = "IRSA SIA2 (current DR1/QR3 image collections)"
+ROUTE_SOURCE = {"tap": TAP_SOURCE, "sia2": SIA_SOURCE}
+SIA_REQUIRED = ("obs_id", "access_url", "t_min", "t_max", "em_min", "em_max")
+# Pinned public DR1 image (detector 6) used only to probe the direct product service; position taken from its own SIA2 row.
+PROBE_PRODUCT = ("ibe/data/spherex/dr1/level2/2025W33_2C/l2b-v27-2026-228/6/"
+                 "level2_2025W33_2C_0321_1D6_spx_l2b-v27-2026-228.fits")
+PROBE_RA, PROBE_DEC = 269.4485, 4.7394
+PROBE_PRODUCT_RA, PROBE_PRODUCT_DEC = PROBE_RA, PROBE_DEC
+
+
+def summary_of(attempts: list[dict]) -> str:
+    return ", ".join(f"{a['route']}={a.get('error_code') or a['outcome']}" for a in attempts if a["outcome"] != "OK")
+
 REQUIRED_COLUMNS = ("collection", "observationid", "energy_bandpassname", "energy_bounds_lower", "energy_bounds_upper",
                     "time_bounds_lower", "time_bounds_upper", "provenance_version", "uri", "contentchecksum")
 _NAME = re.compile(r"^[a-z0-9_]+$")
@@ -80,12 +95,36 @@ def _floats(text: str, name: str) -> float:
 
 
 class IrsaSpherexSource(DataSource):
-    def __init__(self, settings: Settings, transport: Transport | None = None, sleep=time.sleep) -> None:
+    """IRSA SPHEREx source.
+
+    Discovery routes, in preference order (``route_order``):
+
+    1. ``sia2`` - IRSA's documented Simple Image Access v2 service, which IRSA's SPHEREx documentation names as the way to search
+       the current DR1 and QR3 collections (QR2 is no longer searchable there);
+    2. ``tap`` - the legacy TAP service, kept as a bounded fallback and for explicitly requested legacy collections.
+
+    A route failing for a transient reason (timeout, HTTP 5xx, malformed answer) moves on to the next route; every attempt is recorded
+    in ``last_discovery`` and in the result provenance. A route that fails repeatedly is skipped for a cooldown (circuit breaker).
+    If no route answers, ``discover`` raises; it never returns an empty result for a failed search.
+    """
+
+    def __init__(self, settings: Settings, transport: Transport | None = None, sleep=time.sleep, *,
+                 route_order: tuple[str, ...] = ("sia2", "tap"), jitter: float = 0.25, rng: random.Random | None = None,
+                 clock=time.monotonic, breaker_threshold: int = 3, breaker_cooldown_s: float = 120.0,
+                 route_timeouts: dict[str, float] | None = None) -> None:
+        if not route_order or set(route_order) - {"sia2", "tap"}:
+            raise ValueError("route_order must be a non-empty tuple drawn from 'sia2', 'tap'")
         self._settings = settings
         self._http = HttpClient(SOURCE_ID, settings.request_timeout_s, settings.max_retries, transport, sleep,
-                                offline=settings.offline)
+                                offline=settings.offline, jitter=jitter, rng=rng)
         self.cache = ProductCache(Path(settings.cache_dir) / SOURCE_ID)
+        self.route_order = tuple(route_order)
+        self.route_timeouts = {"tap": min(settings.request_timeout_s, 45.0), "sia2": max(settings.request_timeout_s, 60.0)}
+        self.route_timeouts.update(route_timeouts or {})
+        self.breakers = {r: CircuitBreaker(breaker_threshold, breaker_cooldown_s, clock) for r in ("sia2", "tap")}
         self.last_tap_from_cache = False
+        self._from_cache = False
+        self.last_discovery: dict | None = None
 
     @property
     def source_id(self) -> str:
@@ -95,8 +134,8 @@ class IrsaSpherexSource(DataSource):
         return SourceDescription(
             source_id=SOURCE_ID, display_name="NASA/IPAC IRSA: SPHEREx Level 2 spectral images (public archive)",
             requires_credentials=False, capabilities_verified=False,
-            notes="TAP discovery with SIA2 fallback, cutout retrieval and QR3 ePSF access are supported; capability verification remains "
-                  "conservative until automated live conformance completes.")
+            notes="SIA2 discovery (current DR1/QR3) with bounded TAP fallback, cutout retrieval and QR3 ePSF access are supported; "
+                  "capability verification remains conservative until automated live conformance completes.")
 
     # -- TAP -------------------------------------------------------------------
 
@@ -113,7 +152,8 @@ class IrsaSpherexSource(DataSource):
             text = entry.path.read_bytes().decode("utf-8", errors="replace")
             self.last_tap_from_cache = True
         else:
-            resp = self._http.request("POST", TAP_SYNC, data=body, headers={"Content-Type": "application/x-www-form-urlencoded"})
+            resp = self._http.request("POST", TAP_SYNC, data=body, headers={"Content-Type": "application/x-www-form-urlencoded"},
+                                      timeout_s=self.route_timeouts["tap"])
             text = resp.body.decode("utf-8", errors="replace")
             if not text.lstrip().startswith("<"):
                 self.cache.put(key, resp.body, {"kind": "tap_response"})
@@ -126,28 +166,74 @@ class IrsaSpherexSource(DataSource):
             raise HeimdallError.of(ErrorCode.DATA_MALFORMED, f"TAP CSV could not be parsed: {exc}") from None
         if reader.fieldnames is None:
             raise HeimdallError.of(ErrorCode.DATA_MALFORMED, "TAP response has no header row")
+        self._tap_fields = list(reader.fieldnames)
         return rows
 
+    # -- route health ------------------------------------------------------------
+
+    def route_health(self) -> list[dict]:
+        """Probe each access route independently with one bounded attempt (no retries, no cache, never raises).
+
+        Components: ``tap`` and ``sia2`` (discovery), ``product`` (a pinned public DR1 image cutout fetched from the IRSA product service)
+        and ``calibration`` (the QR3 ePSF on the public bucket). A route is ``OK`` only if its answer was usable, not merely HTTP 200.
+        """
+        def probe(name: str, fn) -> dict:
+            t0 = time.monotonic()
+            rec = {"route": name, "checked_at": datetime.now(UTC).isoformat(timespec="seconds"), "status": "OK", "error_code": None,
+                   "http_status": None, "detail": ""}
+            try:
+                rec["detail"] = fn()
+            except HeimdallError as exc:
+                rec.update(status="FAILED", error_code=exc.code.value, http_status=exc.info.detail.get("http_status"),
+                           detail=exc.info.message)
+            except Exception as exc:  # noqa: BLE001 - a probe must report, never raise
+                rec.update(status="FAILED", error_code="UNEXPECTED", detail=f"{type(exc).__name__}: {exc}")
+            rec["elapsed_s"] = round(time.monotonic() - t0, 2)
+            return rec
+
+        def sia() -> str:
+            text = self._sia_get(SIA + "?" + urllib.parse.urlencode(
+                {"COLLECTION": "spherex_dr1", "POS": f"CIRCLE {PROBE_RA:.4f} {PROBE_DEC:.4f} 0.02", "RESPONSEFORMAT": "CSV", "MAXREC": "1"}),
+                cache=False, retries=0)
+            return f"SIA2 answered with a valid ObsCore header ({len(text)} bytes)"
+
+        def tap() -> str:
+            resp = self._http.request("POST", TAP_SYNC, headers={"Content-Type": "application/x-www-form-urlencoded"},
+                                      data=urllib.parse.urlencode({"REQUEST": "doQuery", "LANG": "ADQL", "FORMAT": "csv",
+                                                                   "QUERY": "SELECT TOP 1 observationid FROM spherex.observation"}).encode(),
+                                      timeout_s=self.route_timeouts["tap"], max_retries=0)
+            if not resp.body.lstrip().lower().startswith(b"observationid"):
+                raise HeimdallError.of(ErrorCode.DATA_MALFORMED, "TAP answered but not with the expected CSV")
+            return "TAP answered a one-row query"
+
+        def product() -> str:
+            url = IRSA_BASE + PROBE_PRODUCT + f"?center={PROBE_PRODUCT_RA:.6f},{PROBE_PRODUCT_DEC:.6f}d&size=0.02"
+            resp = self._http.request("GET", url, timeout_s=self.route_timeouts["sia2"], max_retries=0)
+            if not resp.body.startswith(b"SIMPLE  ="):
+                raise HeimdallError.of(ErrorCode.DATA_MALFORMED, "product service did not return FITS")
+            return f"pinned DR1 image cutout returned {len(resp.body)} bytes of FITS"
+
+        def calibration() -> str:
+            resp = self._http.request("HEAD", S3 + CALIBRATIONS["epsf"][0].format(det=2), max_retries=0)
+            return f"QR3 ePSF object reachable (HTTP {resp.status})"
+
+        return [probe("tap", tap), probe("sia2", sia), probe("product", product), probe("calibration", calibration)]
+
     def check_access(self) -> AccessReport:
-        try:
-            rows = self._tap("SELECT table_name FROM TAP_SCHEMA.tables WHERE table_name = 'spherex.plane'")
-            if not rows:
-                raise HeimdallError.of(ErrorCode.ACCESS_DENIED, "spherex.plane is not visible through IRSA TAP")
-            detail = "IRSA TAP reachable; spherex.plane visible; no credentials required"
-        except HeimdallError as exc:
-            # SIA2 is useful when TAP's backend fails (5xx) or TAP alone times
-            # out; those routes are independently served in practice.  A host
-            # that is unreachable cannot benefit from another route on it.
-            status = exc.info.detail.get("http_status")
-            if self._settings.offline or not (exc.code is ErrorCode.ARCHIVE_TIMEOUT or status in {"500", "502", "503"}):
-                raise
-            # A successful empty SIA2 response is still a capability check: it
-            # proves that the documented search endpoint accepted the request.
-            self._sia(DiscoveryQuery(region=SkyRegion(ra_deg=0.0, dec_deg=0.0, radius_deg=0.01), release="spherex_dr1"))
-            detail = "IRSA SIA2 reachable after TAP failure; no credentials required"
+        """Healthy when at least one discovery route answers. Both routes are tried; the detail records each."""
+        if self._settings.offline:
+            raise HeimdallError.of(ErrorCode.ARCHIVE_UNREACHABLE, "offline mode: no network request is made", offline="true")
+        health = {h["route"]: h for h in self.route_health()[:2]}
+        if all(h["status"] != "OK" for h in health.values()):
+            first = next(iter(health.values()))
+            raise HeimdallError.of(ErrorCode.ARCHIVE_UNREACHABLE if first["error_code"] == "ARCHIVE_UNREACHABLE" else ErrorCode.RETRIEVAL_FAILED,
+                                   "no IRSA discovery route answered: " + "; ".join(f"{k}: {v['detail']}" for k, v in health.items()))
+        detail = "IRSA discovery reachable via " + ", ".join(k for k, v in health.items() if v["status"] == "OK") + \
+                 ("; unavailable: " + ", ".join(k for k, v in health.items() if v["status"] != "OK") if any(v["status"] != "OK" for v in health.values()) else "") + \
+                 "; no credentials required"
         return AccessReport(source_id=SOURCE_ID, checked_at=datetime.now(UTC), detail=detail)
 
-    # -- SIA2 fallback ----------------------------------------------------------
+    # -- SIA2 ---------------------------------------------------------------------
 
     @staticmethod
     def _sia_uri(access_url: str) -> str:
@@ -160,52 +246,84 @@ class IrsaSpherexSource(DataSource):
             raise ValueError("SIA2 access_url is not a SPHEREx IBE product path")
         return uri
 
-    def _sia_collections(self, query: DiscoveryQuery) -> tuple[str, ...]:
+    @staticmethod
+    def _requested_collections(query: DiscoveryQuery) -> list[str]:
         filters = dict(query.filters)
-        requested = [c for c in (filters.get("collections", "").split(",") + ([query.release] if query.release else [])) if c]
+        return sorted({c for c in (filters.get("collections", "").split(",") + ([query.release] if query.release else [])) if c})
+
+    def _sia_collections(self, query: DiscoveryQuery) -> tuple[str, ...]:
+        requested = self._requested_collections(query)
         if not requested:
             return SIA_COLLECTIONS
         unknown = sorted(set(requested) - set(SIA_COLLECTIONS))
         if unknown:
             raise HeimdallError.of(ErrorCode.RELEASE_UNAVAILABLE,
-                                   "SIA2 fallback supports current DR1/QR3 collections only", collections=",".join(unknown))
-        return tuple(sorted(set(requested)))
+                                   "SIA2 searches current DR1/QR3 collections only", collections=",".join(unknown))
+        return tuple(requested)
+
+    def _sia_get(self, url: str, *, cache: bool = True, retries: int | None = None) -> str:
+        """One SIA2 CSV answer, validated and cached. Offline mode reads the cache. An error page is never cached."""
+        self._from_cache = False
+        if self._settings.offline:
+            entry = self.cache.get(url)
+            if entry is None:
+                raise HeimdallError.of(ErrorCode.ARCHIVE_UNREACHABLE, "offline mode: this SIA2 query has no cached response",
+                                       offline="true")
+            self._from_cache = True
+            return entry.path.read_bytes().decode("utf-8", errors="replace")
+        resp = self._http.request("GET", url, timeout_s=self.route_timeouts["sia2"], max_retries=retries)
+        text = resp.body.decode("utf-8", errors="replace")
+        if text.lstrip().startswith("<") or not text.strip():
+            raise HeimdallError.of(ErrorCode.DATA_MALFORMED, "SIA2 returned XML/empty instead of the requested CSV")
+        header = text.splitlines()[0].split(",")
+        missing = [c for c in SIA_REQUIRED if c not in header]
+        if missing:
+            raise HeimdallError.of(ErrorCode.DATA_MALFORMED, f"SIA2 response lacks standard ObsCore columns: {missing}")
+        if cache:
+            self.cache.put(url, resp.body, {"kind": "sia2_response"})
+        return text
 
     def _sia(self, query: DiscoveryQuery) -> list[dict[str, str]]:
         """Search current SPHEREx images through IRSA's documented SIA2 CSV API.
 
-        Results are normalised to the internal TAP-row shape so all existing
-        filtering, de-duplication and provenance logic remains shared.
+        Results are normalised to the internal TAP-row shape so all filtering, de-duplication and provenance logic is shared.
+        Each row must carry standard ObsCore fields and an IRSA SPHEREx product URL; anything else makes the answer malformed.
         """
         filters = dict(query.filters)
-        # Validate common filters before any network request, as TAP does.
-        self._where(query)
+        self._where(query)  # validates common filters before any network request
         dets = {d.strip() for d in filters.get("detectors", "1,2,3,4,5,6").split(",")}
         mjd_start = float(filters["mjd_start"]) if filters.get("mjd_start") else None
         mjd_end = float(filters["mjd_end"]) if filters.get("mjd_end") else None
         region = query.region
         rows: list[dict[str, str]] = []
+        from_cache = []
         for collection in self._sia_collections(query):
             params = {"COLLECTION": collection,
                       "POS": f"CIRCLE {region.ra_deg:.10f} {region.dec_deg:.10f} {region.radius_deg:.10f}",
                       "RESPONSEFORMAT": "CSV"}
-            url = SIA + "?" + urllib.parse.urlencode(params)
-            resp = self._http.request("GET", url)
-            text = resp.body.decode("utf-8", errors="replace")
-            if text.lstrip().startswith("<"):
-                raise HeimdallError.of(ErrorCode.DATA_MALFORMED, "SIA2 returned XML instead of requested CSV")
-            reader = csv.DictReader(io.StringIO(text))
-            raw_rows = list(reader)
-            if reader.fieldnames is None:
-                raise HeimdallError.of(ErrorCode.DATA_MALFORMED, "SIA2 response has no header row")
+            text = self._sia_get(SIA + "?" + urllib.parse.urlencode(params))
+            from_cache.append(self._from_cache)
+            try:
+                raw_rows = list(csv.DictReader(io.StringIO(text)))
+            except csv.Error as exc:
+                raise HeimdallError.of(ErrorCode.DATA_MALFORMED, f"SIA2 CSV could not be parsed: {exc}") from None
             for raw in raw_rows:
-                # These are standard SIA2/ObsCore CSV fields.  Do not infer an
-                # observation from a row that lacks a retrievable FITS URL.
                 access_url = (raw.get("access_url") or "").strip()
                 match = _SIA_PRODUCT.search(urllib.parse.urlsplit(access_url).path)
                 if not match:
                     raise HeimdallError.of(ErrorCode.DATA_MALFORMED,
                                            "SIA2 row has no recognisable SPHEREx Level-2 FITS identifier")
+                try:
+                    uri = self._sia_uri(access_url)
+                except ValueError as exc:
+                    raise HeimdallError.of(ErrorCode.DATA_MALFORMED, str(exc)) from None
+                row_collection = (raw.get("obs_collection") or collection).strip()
+                if row_collection != collection:
+                    raise HeimdallError.of(ErrorCode.DATA_MALFORMED,
+                                           f"SIA2 row belongs to {row_collection!r}, not the requested {collection!r}")
+                subtype = (raw.get("dataproduct_subtype") or "science").strip().lower()
+                if subtype != "science":
+                    continue  # only science images are observations; this is a filter, not a failure
                 detector = match.group("det")
                 if detector not in dets:
                     continue
@@ -219,23 +337,19 @@ class IrsaSpherexSource(DataSource):
                     continue
                 if mjd_end is not None and t_min > mjd_end:
                     continue
-                # The product filename, rather than an archive-specific
-                # ObsCore obs_id convention, is the stable exposure/detector
+                # The product filename, not an archive-specific ObsCore obs_id convention, is the stable exposure/detector
                 # identifier used by direct retrieval.
                 version = re.search(r"/l2b-v([^/]+)/", urllib.parse.urlsplit(access_url).path)
-                try:
-                    uri = self._sia_uri(access_url)
-                except ValueError as exc:
-                    raise HeimdallError.of(ErrorCode.DATA_MALFORMED, str(exc)) from None
-                rows.append({"collection": (raw.get("obs_collection") or collection).strip(),
+                rows.append({"collection": row_collection,
                              "observationid": match.group("obs"), "energy_bandpassname": f"SPHEREx-D{detector}",
                              "energy_bounds_lower": str(em_min), "energy_bounds_upper": str(em_max),
                              "time_bounds_lower": str(t_min), "time_bounds_upper": str(t_max),
                              "provenance_version": version.group(1) if version else "",
                              "uri": uri, "contentchecksum": "", "contentlength": ""})
+        self._from_cache = bool(from_cache) and all(from_cache)
         return rows
 
-    def _where(self, query: DiscoveryQuery) -> list[str]:
+    def _where(self, query: DiscoveryQuery, *, current_only: bool = False) -> list[str]:
         r = query.region
         clauses = [f"1 = CONTAINS(POINT('ICRS', {r.ra_deg:.10f}, {r.dec_deg:.10f}), p.poly)", "a.producttype = 'science'"]
         f = dict(query.filters)
@@ -243,6 +357,8 @@ class IrsaSpherexSource(DataSource):
         for c in collections:
             if not _NAME.match(c):
                 raise HeimdallError.of(ErrorCode.INPUT_INVALID, "collection names may contain only a-z, 0-9 and _", filter="collections")
+        if not collections and current_only:
+            collections = list(SIA_COLLECTIONS)  # same scope as SIA2: current DR1/QR3 images, never legacy releases
         if collections:
             clauses.append("o.collection IN (" + ", ".join(f"'{c}'" for c in sorted(set(collections))) + ")")
         if f.get("detectors"):
@@ -256,28 +372,81 @@ class IrsaSpherexSource(DataSource):
             clauses.append(f"p.time_bounds_lower <= {_floats(f['mjd_end'], 'mjd_end'):.6f}")
         return clauses
 
-    def discover(self, query: DiscoveryQuery) -> DiscoveryResult:
+    # -- discovery with route failover ---------------------------------------------
+
+    def _tap_discovery_rows(self, query: DiscoveryQuery) -> list[dict[str, str]]:
         adql = ("SELECT o.collection, o.observationid, p.energy_bandpassname, p.energy_bounds_lower, p.energy_bounds_upper, "
                 "p.time_bounds_lower, p.time_bounds_upper, p.provenance_version, a.uri, a.contentchecksum, a.contentlength "
                 "FROM spherex.plane p JOIN spherex.artifact a ON a.planeid = p.planeid "
-                "JOIN spherex.observation o ON o.obsid = p.obsid WHERE " + " AND ".join(self._where(query)) +
+                "JOIN spherex.observation o ON o.obsid = p.obsid WHERE " + " AND ".join(self._where(query, current_only=True)) +
                 " ORDER BY p.time_bounds_lower, p.energy_bandpassname")
-        try:
-            rows = self._tap(adql)
-            discovery_source = TAP_SOURCE
-        except HeimdallError as exc:
-            # A malformed TAP answer is an adapter/data contract issue, not a
-            # reason to switch services.  Only a TAP timeout or backend 5xx
-            # gets the independently documented SIA2 route.
-            status = exc.info.detail.get("http_status")
-            if self._settings.offline or not (exc.code is ErrorCode.ARCHIVE_TIMEOUT or status in {"500", "502", "503"}):
-                raise
-            rows = self._sia(query)
-            discovery_source = "IRSA SIA2 (current DR1/QR3 image collections) after TAP failure"
+        rows = self._tap(adql)
+        missing = [c for c in REQUIRED_COLUMNS if c not in self._tap_fields]
+        if missing:
+            raise HeimdallError.of(ErrorCode.DATA_MALFORMED, f"discovery response lacks columns: {missing}")
+        self._from_cache = self.last_tap_from_cache
+        return rows
+
+    @staticmethod
+    def _failover_ok(exc: HeimdallError) -> bool:
+        """Failures that say 'this route is unhealthy' (so another route may help). Auth, bad input and a dead host are not."""
+        status = exc.info.detail.get("http_status")
+        return (exc.code in (ErrorCode.ARCHIVE_TIMEOUT, ErrorCode.DATA_MALFORMED) or status in {"500", "502", "503"}
+                or exc.info.detail.get("offline") == "true")
+
+    def _plan_routes(self, query: DiscoveryQuery) -> tuple[list[str], str | None]:
+        requested = self._requested_collections(query)
+        if requested and set(requested) - set(SIA_COLLECTIONS):
+            return ["tap"], ("legacy collections " + ",".join(sorted(set(requested) - set(SIA_COLLECTIONS))) +
+                             " requested explicitly; SIA2 cannot search them, so TAP only (legacy, not current data)")
+        return list(self.route_order), None
+
+    def discover(self, query: DiscoveryQuery) -> DiscoveryResult:
+        self._where(query)  # input validation first: bad filters are INPUT_INVALID on every route
+        routes, plan_note = self._plan_routes(query)
+        attempts: list[dict] = []
+        rows: list[dict[str, str]] | None = None
+        used = ""
+        errors: list[HeimdallError] = []
+        for route in routes:
+            br = self.breakers[route]
+            if not br.allow():
+                attempts.append({"route": route, "outcome": "SKIPPED_CIRCUIT_OPEN", "retry_in_s": round(br.retry_in_s(), 1)})
+                continue
+            try:
+                rows = self._sia(query) if route == "sia2" else self._tap_discovery_rows(query)
+            except HeimdallError as exc:
+                attempts.append({"route": route, "outcome": "FAILED", "error_code": exc.code.value,
+                                 "http_status": exc.info.detail.get("http_status"), "message": exc.info.message})
+                errors.append(exc)
+                if not self._failover_ok(exc):
+                    raise
+                if not self._settings.offline:
+                    br.failure()
+                continue
+            br.success()
+            used = route
+            attempts.append({"route": route, "outcome": "OK", "from_cache": self._from_cache})
+            break
+        self.last_discovery = {"route_used": used or None, "attempts": attempts, "from_cache": self._from_cache if used else False,
+                               "plan_note": plan_note}
+        if rows is None:
+            # No route produced an answer. This is a failure, never an empty result.
+            summary = "; ".join(f"{a['route']}: {a.get('error_code') or a['outcome']}" +
+                                (f" (HTTP {a['http_status']})" if a.get("http_status") else "") for a in attempts)
+            if errors:
+                first = errors[0]
+                raise HeimdallError.of(first.code, f"IRSA discovery failed on every route ({summary})",
+                                       **{k: v for k, v in first.info.detail.items() if k in ("http_status", "host", "offline")})
+            raise HeimdallError.of(ErrorCode.ARCHIVE_UNREACHABLE,
+                                   f"IRSA discovery routes are in circuit-open cooldown ({summary}); retry later")
+        discovery_source = ROUTE_SOURCE[used] + (f"; earlier route(s) failed: {summary_of(attempts)}" if len(attempts) > 1 else "")
         now = datetime.now(UTC)
-        origin = DataOrigin.CACHED if self.last_tap_from_cache else DataOrigin.LIVE
+        self.last_tap_from_cache = self._from_cache
+        origin = DataOrigin.CACHED if self._from_cache else DataOrigin.LIVE
         prov = Provenance(origin=origin, retrieved_at=now, software_version=__version__,
-                          notes="discovery metadata from " + discovery_source + (" (cached response, offline)" if self.last_tap_from_cache else ""))
+                          notes="discovery metadata from " + discovery_source + (" (cached response, offline)" if self._from_cache else "") +
+                                (f"; {plan_note}" if plan_note else ""))
         if not rows:
             return DiscoveryResult(outcome=ResultOutcome.NO_OBSERVATIONS, observations=(), provenance=prov)
         missing = [c for c in REQUIRED_COLUMNS if c not in rows[0]]

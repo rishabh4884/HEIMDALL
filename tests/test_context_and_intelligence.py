@@ -161,7 +161,7 @@ class AdapterRobustnessTests(unittest.TestCase):
         if offline:
             env["HEIMDALL_OFFLINE"] = "1"
         return IrsaSpherexSource(load_settings(environ=env), transport=Fake(*responses),
-                                 sleep=(sleeps.append if sleeps is not None else lambda s: None))
+                                 sleep=(sleeps.append if sleeps is not None else lambda s: None), route_order=("tap", "sia2"), jitter=0.0)
 
     def test_duplicate_release_listings_are_counted_once(self):
         body = self.HEADER + self.ROW.format(c="spherex_qr2", v="6.4", r="qr2") + self.ROW.format(c="spherex_qr3", v="7.0", r="qr3")

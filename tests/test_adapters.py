@@ -60,10 +60,10 @@ class IrsaTests(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def source(self, *responses):
+    def source(self, *responses, route_order=("tap", "sia2")):
         self.transport = FakeTransport(*responses)
         self.sleeps = []
-        return IrsaSpherexSource(self.settings, transport=self.transport, sleep=self.sleeps.append)
+        return IrsaSpherexSource(self.settings, transport=self.transport, sleep=self.sleeps.append, route_order=route_order, jitter=0.0)
 
     def test_discovery_parses_rows_into_tagged_observations(self):
         result = self.source(ok(HEADER + ROW)).discover(QUERY)
@@ -184,7 +184,7 @@ class IrsaConformance(DataSourceContract, unittest.TestCase):
 
     def make_source(self):
         settings = load_settings(environ={"HEIMDALL_CACHE_DIR": tempfile.mkdtemp()})
-        return IrsaSpherexSource(settings, transport=FakeTransport(ok("table_name\nspherex.plane\n")), sleep=lambda s: None)
+        return IrsaSpherexSource(settings, transport=FakeTransport(ok("observationid\nTESTONLY_0001_1\n")), sleep=lambda s: None)
 
 
 class LocalFitsTests(unittest.TestCase):

@@ -98,6 +98,8 @@ def _parser() -> argparse.ArgumentParser:
     sub.add_parser("check", help="validate configuration (never prints secrets)")
     s = sub.add_parser("sources", help="list registered data sources")
     s.add_argument("--json", action="store_true")
+    s = sub.add_parser("irsa-status", help="probe IRSA TAP, SIA2, direct product and calibration access separately (contacts IRSA)")
+    s.add_argument("--json", action="store_true")
     s = sub.add_parser("access", help="check access to a data source (contacts the source)")
     s.add_argument("source")
     s.add_argument("--local-root")
@@ -202,6 +204,14 @@ def _run(args) -> int:
     engine = Engine.from_environment(_env_file(), cfg_path if args.command == "investigate" else None)
     if args.command == "sources":
         _print(engine.sources(), args.json)
+    elif args.command == "irsa-status":
+        health = engine.source("irsa-spherex").route_health()
+        if args.json:
+            _print(health, True)
+        else:
+            for h in health:
+                print(f"{h['checked_at']} {h['route']:12s} {h['status']:6s} http={h['http_status'] or '-':4s} {h['elapsed_s']:6.2f}s {h['detail']}")
+        return 0 if any(h["status"] == "OK" for h in health[:2]) else 1  # healthy when either discovery route works
     elif args.command == "access":
         _print(engine.check_access(args.source, args.local_root), False)
     elif args.command == "coverage":

@@ -17,6 +17,7 @@ credentials. The transport is injectable so tests never touch the network.
 from __future__ import annotations
 
 import os
+import random
 import socket
 import ssl
 import time
@@ -100,7 +101,8 @@ _RETRY_STATUS = {408: ErrorCode.ARCHIVE_TIMEOUT, 504: ErrorCode.ARCHIVE_TIMEOUT,
 
 class HttpClient:
     def __init__(self, source_id: str, timeout_s: float, max_retries: int, transport: Transport | None = None,
-                 sleep: Callable[[float], None] = time.sleep, backoff_s: float = 1.0, offline: bool = False) -> None:
+                 sleep: Callable[[float], None] = time.sleep, backoff_s: float = 1.0, offline: bool = False,
+                 jitter: float = 0.0, rng: random.Random | None = None) -> None:
         self.source_id = source_id
         self.timeout_s = timeout_s
         self.max_retries = max_retries
@@ -108,23 +110,35 @@ class HttpClient:
         self.sleep = sleep
         self.backoff_s = backoff_s
         self.offline = offline
+        # Random extra delay of up to ``jitter`` x the backoff, so that parallel clients do not retry in lock-step.
+        # Zero (the default) keeps backoff deterministic; the IRSA adapter enables it.
+        self.jitter = jitter
+        self.rng = rng or random.Random()
         self.attempts = 0
 
-    def request(self, method: str, url: str, data: bytes | None = None, headers: dict[str, str] | None = None) -> HttpResponse:
+    def request(self, method: str, url: str, data: bytes | None = None, headers: dict[str, str] | None = None,
+                timeout_s: float | None = None, max_retries: int | None = None) -> HttpResponse:
+        """One logical request. ``timeout_s`` and ``max_retries`` override the client defaults for this call (route-specific budgets)."""
+        timeout = self.timeout_s if timeout_s is None else timeout_s
+        retries = self.max_retries if max_retries is None else max_retries
         host = urllib.parse.urlsplit(url).netloc
         if self.offline:
             raise HeimdallError.of(ErrorCode.ARCHIVE_UNREACHABLE, f"offline mode: no network request to {host} is made",
                                    host=host, offline="true")
         last: HeimdallError | None = None
         retry_after: float | None = None
-        for attempt in range(self.max_retries + 1):
+        for attempt in range(retries + 1):
             if attempt:
                 # Honour a server Retry-After (rate limiting), bounded to 60 s; otherwise exponential backoff.
-                self.sleep(min(retry_after, 60.0) if retry_after is not None else self.backoff_s * 2 ** (attempt - 1))
+                if retry_after is not None:
+                    self.sleep(min(retry_after, 60.0))
+                else:
+                    base = self.backoff_s * 2 ** (attempt - 1)
+                    self.sleep(base * (1.0 + self.jitter * self.rng.random()) if self.jitter else base)
             retry_after = None
             self.attempts += 1
             try:
-                resp = self.transport(method, url, data, dict(headers or {}), self.timeout_s)
+                resp = self.transport(method, url, data, dict(headers or {}), timeout)
             except TransportTimeout:
                 last = HeimdallError.of(ErrorCode.ARCHIVE_TIMEOUT, f"request to {host} timed out", host=host, source=self.source_id)
                 continue

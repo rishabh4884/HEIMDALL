@@ -195,7 +195,8 @@ def _blind_pipeline(engine_parts: dict, selected_ids: list[str], center: tuple[f
     req = InvestigationRequest(ra_deg=center[0], dec_deg=center[1], radius_deg=size / 2.0, source_id=source.source_id, obs_ids=selected_ids,
                                cutout_size_deg=size, label=f"target {spec.target_id}", context="auto" if opts.context else "none")
     try:
-        res = InvestigationPipeline(source, cfg, settings, registry, progress).run(req)
+        res = InvestigationPipeline(source, cfg, settings, registry,
+                                    (lambda stage, msg: progress(f"blind pipeline: [{stage}] {msg}")) if progress else None).run(req)
     except Exception as exc:  # noqa: BLE001 - the blind run must not invalidate the target analysis
         return {"status": "FAILED", "reason": f"{type(exc).__name__}: {exc}"}
     run_dir = None
@@ -272,8 +273,10 @@ def investigate_target(spec: TargetSpec, *, source: DataSource, settings: Settin
         disc = source.discover(DiscoveryQuery(region=SkyRegion(ra_deg=c0.ra_deg, dec_deg=c0.dec_deg, radius_deg=0.05), filters=filters))
     except HeimdallError as exc:
         result["failed_items"].append(plain(exc.info))
+        result["discovery"] = {"source_id": source.source_id, "outcome": "FAILED", "route": getattr(source, "last_discovery", None)}
         return _finish(result, created, "BLOCKED", "FAILED", f"discovery failed: {exc.code}: {exc.info.message}", settings, opts, store)
     result["discovery"] = {"source_id": source.source_id, "outcome": disc.outcome.value, "filters": filters, "origin": disc.provenance.origin.value,
+                           "route": getattr(source, "last_discovery", None), "notes": disc.provenance.notes,
                            "failed_items": plain(disc.failed_items)}
     if disc.outcome is ResultOutcome.NO_OBSERVATIONS or not disc.observations:
         result["coverage"] = {"n_discovered": 0, "n_selected": 0, "n_measured": 0}
@@ -464,6 +467,20 @@ def _finish(result: dict, created: datetime, execution: str, test_status: str, w
         d.mkdir(parents=True, exist_ok=True)
         text = json.dumps(out, indent=1, sort_keys=True, allow_nan=False)
         (d / f"{out['investigation_id'].split(':')[-1]}.json").write_text(text, encoding="utf-8")
-        (d / "latest.json").write_text(text, encoding="utf-8")
-        out["saved_to"] = str(d / "latest.json")
+        # A BLOCKED attempt (e.g. an archive outage) must not replace an earlier completed result as "latest": the failed attempt is
+        # kept (per-id file and latest_attempt.json) and the completed result stays current, each carrying its own timestamps/provenance.
+        latest = d / "latest.json"
+        prior_ok = False
+        if execution == "BLOCKED" and latest.exists():
+            try:
+                prior_ok = json.loads(latest.read_text(encoding="utf-8")).get("status", {}).get("execution") in ("COMPLETED", "PARTIAL")
+            except (OSError, ValueError):
+                prior_ok = False
+        (d / "latest_attempt.json").write_text(text, encoding="utf-8")
+        if prior_ok:
+            out["saved_to"] = str(d / "latest_attempt.json")
+            out["warnings"] = list(out.get("warnings", [])) + ["blocked attempt saved as latest_attempt.json; latest.json still holds the earlier completed result"]
+        else:
+            latest.write_text(text, encoding="utf-8")
+            out["saved_to"] = str(latest)
     return out

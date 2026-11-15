@@ -617,6 +617,21 @@ class UnresolvedTargetTests(unittest.TestCase):
         self.assertNotIn("measurements", res)
         self.assertIn("not resolved", res["status"]["reason"])
 
+    def test_blocked_attempt_does_not_replace_an_earlier_completed_result(self):
+        import json
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        d = tmp / "targets" / "NASA-04"
+        d.mkdir(parents=True)
+        earlier = json.dumps({"status": {"execution": "COMPLETED"}, "marker": "earlier real result"})
+        (d / "latest.json").write_text(earlier)
+        engine = Engine(settings=load_settings(environ={"HEIMDALL_STATE_DIR": str(tmp), "HEIMDALL_CACHE_DIR": str(tmp / "c"), "HEIMDALL_OFFLINE": "1"}))
+        res = engine.investigate_target("NASA-04", source_id="local-fits", local_root=str(generated().directory))
+        self.assertEqual(res["status"]["execution"], "BLOCKED")
+        self.assertEqual((d / "latest.json").read_text(), earlier)
+        self.assertEqual(json.loads((d / "latest_attempt.json").read_text())["status"]["execution"], "BLOCKED")
+        self.assertTrue(res["saved_to"].endswith("latest_attempt.json"))
+
 
 if __name__ == "__main__":
     unittest.main()

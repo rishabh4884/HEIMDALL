@@ -1,42 +1,92 @@
 # Real-data verification: public SPHEREx QR2 data from IRSA (2026-10-29)
 
-## Current access recheck and NASA-target attempt (2026-11-15 IST)
+## IRSA access stabilisation and NASA-target runs (2026-11-15, UTC)
 
-This section records a later operational check; it does **not** alter the
-historical QR2 validation reported below.
+This section supersedes the earlier "access recheck" note. It does **not** alter the historical QR2 validation below. Everything here is
+operational or provisional: nothing is an independently validated astrophysical result, and nothing concerns Planet X.
 
-- A minimal legacy TAP POST to `https://irsa.ipac.caltech.edu/TAP/sync`
-  (`SELECT TOP 1 observationid FROM spherex.observation`) returned HTTP 502.
-- The current IRSA-documented SIA2 query route,
-  `https://irsa.ipac.caltech.edu/SIA?COLLECTION=spherex_dr1&POS=CIRCLE+269.452+4.693+0.05&RESPONSEFORMAT=CSV`, also returned HTTP 502.
-  Thus SIA2 is a documented future discovery route, but it was not an
-  operational fallback at the time of this check.
-- A direct on-premises DR1 FITS URL from an earlier live archive response did
-  respond (HTTP 200/206). A bounded cutout retrieval succeeded for
-  `2025W33_2C_0321_1D6` (D6; MJD 60902.865381). Its SHA-256 was
-  `f6bb5740841c7381ad86e6334038dc09fe565045157fd4e5473435ec4c1e1f8a`.
-  HEIMDALL ingestion passed its required-HDU, array-shape, units, WCS,
-  finite-pixel, flag-vocabulary, spectral-WCS, time, detector, fine-astrometry
-  and L2-DQA checks. A forced measurement at the **unassociated cutout centre**
-  was 118.8 +/- 99.6 uJy at 4.9156 um (S/N 1.19); its centroid fit fell back to
-  the fixed position. This is neither a detection nor a measurement of any NASA
-  target.
-- Bounded target attempts are saved in `.heimdall/state/targets/` and
-  `.heimdall/verification/2026-11-15-targets/`: NASA-01 and NASA-02 reached
-  SPHEREx discovery but received HTTP 502; NASA-03 could not resolve through
-  CatWISE because IRSA returned HTTP 502; NASA-04 and NASA-05 discovery timed
-  out. All five results are `BLOCKED` / `FAILED`, have zero retrieved target
-  products, and must not be interpreted as non-detections.
+### Routes and what the documentation supports
 
-The IRSA user guide now states that new work should search DR1 and QR3 using
-SIA2; QR2 remains directly downloadable but is no longer searchable. The
-adapter now retains TAP for compatibility and falls back on TAP HTTP 500/502/503
-to SIA2's documented ObsCore CSV response, accepting only validated current
-DR1/QR3 fields and IRSA on-premises FITS URLs. Transport failures and malformed
-responses still fail explicitly; they are never converted into empty coverage.
-The fallback has transport-level tests, but could not be live-confirmed in this
-check because the IRSA host also timed out. `scripts/run_nasa_targets.sh` now
-bounds its health checks rather than waiting indefinitely.
+- IRSA's SPHEREx archive documentation (`caltech-ipac.github.io/spherex-archive-documentation`, "spherex data access") names the SIA2
+  collections `spherex_dr1`, `spherex_dr1_deep`, `spherex_dr1_cube`, `spherex_qr3`, `spherex_qr3_deep`, says QR2 is "not searchable via SIA2"
+  (still directly downloadable until February 2027), says SIA2 availability lags new data by about a day, and that new data appear first in
+  TAP. HEIMDALL therefore searches `spherex_dr1`, `spherex_dr1_deep`, `spherex_qr3`, `spherex_qr3_deep` (the `_cube` product is not a Level 2 image).
+- The generic SIA2 parameters (`COLLECTION`, `POS`, `RESPONSEFORMAT`, `MAXREC`) are documented at `irsa.ipac.caltech.edu/ibe/sia.html`
+  (that page's own SPHEREx example still shows the older `spherex_qr2` name; the collection names above come from the SPHEREx documentation).
+- **Live response format (validated 2026-11-15 05:02Z, `spherex_dr1`, CSV):** 51 columns including `obs_id` (`2025W33_2C_0321_1`),
+  `access_url` (`https://irsa.ipac.caltech.edu/ibe/data/spherex/dr1/level2/<week>/<l2b-version>/<detector>/level2_<obsid>D<n>_spx_<version>.fits`),
+  `t_min`/`t_max` (MJD), `em_min`/`em_max` (metres), `obs_collection`, `dataproduct_subtype` (`science`), `calib_level` (2), `energy_bandpassname`
+  (`SPHEREx-D<n>`), `access_estsize`, `s_region`. SIA2 carries **no checksum**; HEIMDALL records the SHA-256 of what it retrieves. A trimmed
+  real sample is `tests/fixtures/sia2_dr1_live_sample.csv`.
+- **Route policy (`heimdall/data_access/irsa_spherex.py`):** SIA2 first for current DR1/QR3; TAP is a bounded fallback (restricted to the same
+  collections so the two routes mean the same thing). A request that names a legacy collection (e.g. `spherex_qr2`) goes to TAP only and is
+  labelled legacy in the provenance; QR2 is never mixed in silently. Failover happens on timeout, HTTP 500/502/503 and malformed answers, not
+  on 401/403/bad input. Each route has its own timeout (TAP min(configured, 45) s, SIA2 max(configured, 60) s), exponential backoff with up to
+  25 % jitter, and a circuit breaker (3 consecutive failed discoveries open a route for 120 s; open routes are skipped and reported
+  `SKIPPED_CIRCUIT_OPEN`). If no route answers, `discover` raises; it never returns `NO_OBSERVATIONS` for a failed search. Successful SIA2 and
+  TAP answers are cached, so `HEIMDALL_OFFLINE=1` replays the same discovery (verified live below).
+- Retrieval by `obs_id` alone still looks the file up through TAP; the pipeline always passes the `access_reference` obtained at discovery, so
+  SIA2-discovered observations do not need TAP.
+
+### Endpoint behaviour observed (all times UTC; `python3 -m heimdall irsa-status` unless noted)
+
+| Time | TAP | SIA2 | Direct product (cutout) | ePSF calibration |
+|---|---|---|---|---|
+| 04:59 (curl) | 502 | 502 | not probed | 200 |
+| 05:00-05:02 (curl, `MAXREC=3`) | 502 | 200 on 4 of 6 requests, 502 on the rest | - | - |
+| 05:06 | 502 | 502 | OK (3.95 MB FITS, 20 s) | 404 (probe bug: unformatted `{det}` in the URL; fixed) |
+| 05:12 | 502 | OK | - | - |
+| 05:16 | timeout (46 s) | OK | OK | OK |
+| 05:39 | 502 | 502 | 503 | OK |
+
+SIA2 and TAP failed independently and intermittently; SIA2 was usable in most of the window in which TAP was not. IRSA remained unstable
+throughout, which is why discovery is retried within a bounded budget rather than assumed.
+
+### Real image retrieved and measured through the final adapter
+
+`python3 scripts/irsa_live_smoke.py --attempts 8` (record: `.heimdall/verification/2026-11-15-irsa/live_smoke.json`):
+attempt 1 failed on both routes (SIA2 502, TAP 502; reported as a service failure, not "no observations"); attempt 2 succeeded **through SIA2**.
+
+- Image `2026W12_1A_0311_3D2`, release `spherex_dr1`, pipeline version 7.0.5, detector 2, MJD 61116.6838;
+  `ibe/data/spherex/dr1/level2/2026W12_1A/l2b-v27-2026-235/2/level2_2026W12_1A_0311_3D2_spx_l2b-v27-2026-235.fits`; 0.05-degree cutout
+  retrieved 2026-11-15T05:15:05Z (origin `LIVE`), 3 965 760 bytes, SHA-256 `8ddfd7120db45a9ed92676ed6d88a79ed43219e6c7811b37e4b9fa0caf7bb0d9`;
+  ePSF `epsf_D2_spx_cal-epsf-v1-2026-191` SHA-256 `7b94af0250aa7e56a9e78af34ca2c1373985926c0a0f3263218d1b0ddc94a926`.
+- HEIMDALL ingestion passed (no QC exclusions). One **forced PSF measurement at the unassociated field position** (RA 269.4485, Dec 4.7394):
+  129.0 +/- 36.5 uJy, S/N 3.5, reduced chi-square 48.4. **This is not a detection and not a measurement of any source**: the position is not
+  tied to a catalogue object, and the large reduced chi-square says the single-PSF model does not describe the stamp. It proves that access,
+  ingestion and measurement work on a real image, nothing more.
+- Offline replay: `HEIMDALL_OFFLINE=1 python3 -m heimdall coverage --source irsa-spherex --ra 269.4485 --dec 4.7394 --radius 0.02 --detectors 2`
+  returned the same 63 detector-2 observations (4 epochs) from the cached SIA2 answer.
+
+### NASA targets (saved JSON; `docs/NASA_TARGET_MATRIX.md` is generated from it)
+
+The five-target runner (`.heimdall/verification/2026-11-15-targets/`, TAP route) produced the saved results for NASA-01..04. Two targeted
+reruns were made because the access route changed materially: **NASA-05** (previously `BLOCKED`: discovery HTTP 502) now completed through
+SIA2 (189 observations found, 12 selected, 10 measured, all products `LIVE`, SIA2 route recorded in `discovery.route`), and **NASA-01** was
+rerun to exercise the fixed blind pipeline but IRSA returned 502 on both routes at 05:39Z, so that attempt is `BLOCKED` and is kept as
+`.heimdall/state/targets/NASA-01/latest_attempt.json`; `latest.json` still holds the earlier completed result (`tinv:NASA-01:88a6ee56`).
+A blocked attempt no longer replaces a completed result as `latest`.
+
+| Target | Status | Observations found / measured | What it can and cannot say |
+|---|---|---|---|
+| NASA-01 Barnard's Star | COMPLETED / LIMITED_BY_DATA | 120 / 9 | all measured images have saturation flags; no valid motion test. Blind pipeline had failed in that run (since fixed; not rerun on this target). |
+| NASA-02 Epsilon Indi B | COMPLETED / PASSED | 177 / 16 | motion consistent with catalogue (fitted 4.533 vs 4.613 arcsec/yr, 15 of 16 points, 521 d); variability with caveats. Provisional; registration artefact and blended companion not excluded. |
+| NASA-03 WISE 0855 | PARTIAL / LIMITED_BY_DATA | 93 / 9 | too faint per image for centroids; no motion or variability test. |
+| NASA-04 RW Aur | COMPLETED / LIMITED_BY_DATA | 111 / 12 | no comparable series with enough points; saturation flags. |
+| NASA-05 R Dra | COMPLETED / LIMITED_BY_DATA | 189 / 10 | all 10 measured images saturation-flagged; no valid variability test; blind pipeline PARTIAL, 0 of 10 blind detections near the expected position (not a non-detection of the star, which is saturated). |
+
+### Limits and reproduction
+
+- No target result is an independently validated astrophysical claim; "LIMITED_BY_DATA" is a statement about the data, never a non-detection.
+- Not done: live confirmation of the TAP fallback direction after SIA2 failure (it is covered by deterministic tests `tests/test_irsa_routes.py`,
+  and in the live runs SIA2 or TAP-down/SIA2-up occurred, not SIA2-down/TAP-up); QR2 data (direct download only) are not searched.
+- Reproduce: `python3 -m heimdall irsa-status`; `python3 scripts/irsa_live_smoke.py`; `scripts/run_nasa_targets.sh [NASA-0x ...]` (bounded health
+  check, finite budget, exit 1 if no discovery route answers); `python3 -m heimdall target matrix --write docs/NASA_TARGET_MATRIX.md`;
+  tests: `python3 -W error -m unittest tests.test_irsa_routes tests.test_adapters`.
+
+---
+
+## Historical QR2 validation (2026-10-29)
 
 **What this is:** an end-to-end exercise of the HEIMDALL engine on genuine,
 public SPHEREx Level 2 images. **What it is not:** scientific validation.
