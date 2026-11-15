@@ -34,6 +34,15 @@ def _offline(settings):
     return dataclasses.replace(settings, offline=True)
 
 
+CATALOGUE_ATTEMPT_TIMEOUT_S = 30.0
+
+
+def _single_attempt(settings):
+    """Catalogue calls made by a worker: one bounded attempt per job run. The durable job owns retries (backoff, deadline, recovery), so
+    inner HTTP retries would only hold the single worker during a catalogue outage and starve every other queued job."""
+    return dataclasses.replace(settings, max_retries=0, request_timeout_s=min(settings.request_timeout_s, CATALOGUE_ATTEMPT_TIMEOUT_S))
+
+
 def request_key(spec: TargetSpec, opts: TargetOptions, config_hash: str, manifest_id: str | None) -> str:
     return "tres:" + digest([spec.to_dict(), opts.to_dict(), config_hash, manifest_id], 20)
 
@@ -50,8 +59,9 @@ def advance(service: DataService, spec: TargetSpec, opts: TargetOptions, *, sett
     """One non-blocking step. Returns {"state": "DONE", "result": ...} or {"state": "WAIT"|<terminal readiness>, ...}. Online = a worker may use the network.
     ``analyse=False``: if every input is local but no stored identical result exists, return WAIT(analysis) instead of computing inline."""
     cfg_settings = settings if online else _offline(settings)
-    gaia = CachedService("gaia", cfg_settings)
-    catwise = CachedService("catwise", cfg_settings)
+    cat_settings = _single_attempt(cfg_settings) if online else cfg_settings
+    gaia = CachedService("gaia", cat_settings)
+    catwise = CachedService("catwise", cat_settings)
     ref = astrometry.resolve(spec, catwise if spec.catalogue == "catwise2020" else gaia, gaia_service=gaia)
     if not ref.resolved:
         coord = spec.target_id.startswith("COORD-")

@@ -166,6 +166,15 @@ class SyntheticTargetFlowTests(unittest.TestCase):
         self.assertEqual(again["investigation_id"], done["investigation_id"])  # stored identical result returned at once
 
 
+class CatalogueAttemptTests(unittest.TestCase):
+    def test_worker_catalogue_calls_make_one_bounded_attempt(self):
+        from heimdall.config import load_settings as ls
+        st = ls(environ={"HEIMDALL_REQUEST_TIMEOUT_S": "120", "HEIMDALL_MAX_RETRIES": "4"})
+        one = prepare._single_attempt(st)
+        self.assertEqual((one.max_retries, one.request_timeout_s), (0, prepare.CATALOGUE_ATTEMPT_TIMEOUT_S))
+        self.assertEqual((st.max_retries, st.request_timeout_s), (4, 120.0))  # the caller's settings are not mutated
+
+
 class EnginePreparationTests(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
