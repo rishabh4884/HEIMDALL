@@ -43,6 +43,7 @@ is given. Implementation: `heimdall/server.py` (stdlib only); tests: `tests/test
 | `GET /jobs/{job_id}` | target jobs: status (+`events[]`) while preparing; the full result once complete | reconnect at any time; never resubmit |
 | `GET /jobs?state=&kind=&limit=` | job list | |
 | `POST /jobs/{job_id}/cancel` | status after cancellation | |
+| `GET /evidence/pair?a=&b=&ra=&dec=[&investigation=&size_arcsec=&npix=]` | `heimdall.product_pair/1.0`: two exact cached products resampled onto one north-up, east-left TAN grid (8-bit display stretches, per image and common, plus the engine's photometry mask), per-image detector, MJD, wavelength at the position, release and pipeline; `comparability` (same detector, wavelength within the temporal tolerance; a saved series record is attached when `investigation` is given); `difference` (B − A in σ, masked, with preparation and limitations) only when comparable | read-only; 404 if either product is not cached and checksum-matched; never fetches |
 | `GET /manifests/{man:...}` | frozen input manifest (products, SHA-256, release, route, retrieval time, index sync) | |
 
 Errors: `{"schema":"heimdall.http/1.0","error":{"code","message"}}`, codes `INPUT_INVALID` (400), `UNAUTHORIZED` (401), `NOT_FOUND` (404),

@@ -189,6 +189,24 @@ class Api:
             if preview is None:
                 raise ApiError(404, "NOT_FOUND", "No displayable, checksum-matched science image is available in this local cache.")
             return 200, preview
+        if route == ("GET", "evidence") and p == ["evidence", "pair"]:
+            from .web_pair import aligned_pair
+            a, b = query.get("a", [""])[0], query.get("b", [""])[0]
+            if not (re.fullmatch(r"[0-9a-f]{64}", a) and re.fullmatch(r"[0-9a-f]{64}", b)) or a == b:
+                raise ApiError(400, "INPUT_INVALID", "a and b must be two different 64-hex sha256 values")
+            doc = None
+            inv = query.get("investigation", [""])[0]
+            if inv:
+                m = RE_INV.match(inv)
+                if not m:
+                    raise ApiError(400, "INPUT_INVALID", "investigation id must look like tinv:<target>:<8 hex>")
+                doc = self._read_json(self.targets_dir / m.group(1) / f"{m.group(2)}.json", f"no saved investigation {inv}")
+            pair = aligned_pair(self.svc, Path(self.engine.settings.cache_dir), a, b, _ra(_num(query, "ra", -360.0, 720.0)),
+                                _num(query, "dec", -90.0, 90.0), _num(query, "size_arcsec", 20.0, 900.0, 240.0),
+                                int(_num(query, "npix", 16, 128, 96)), doc)
+            if pair is None:
+                raise ApiError(404, "NOT_FOUND", "Both exact, checksum-matched science products must be cached locally to align them.")
+            return 200, pair
         if route == ("GET", "inventory") and len(p) == 2 and p[1] == "partitions":
             from .dataservice.allsky import AllSkyIndex
             tile = _num(query, "tile_deg", 0.25, 5.0, 2.0)
@@ -453,15 +471,11 @@ def make_handler(api: Api, token: str | None, cors_origin: str | None):
     from .hips import HiPSCache, PREFIX
 
     hips_cache = HiPSCache(Path(api.engine.settings.cache_dir), api.engine.settings.offline)
-    assets = {
-        "/": ("index.html", "text/html; charset=utf-8"),
-        "/workbench.css": ("workbench.css", "text/css; charset=utf-8"),
-        "/workbench.js": ("workbench.js", "text/javascript; charset=utf-8"),
-        "/sky.js": ("sky.js", "text/javascript; charset=utf-8"),
-        "/records.js": ("records.js", "text/javascript; charset=utf-8"),
-        "/charts.js": ("charts.js", "text/javascript; charset=utf-8"),
-        "/hips.js": ("hips.js", "text/javascript; charset=utf-8"),
-    }
+    web = files("heimdall").joinpath("web")
+    # Every module in heimdall/web is served at /<name>.js|.css; nothing else (no directory traversal: fixed name pattern).
+    assets = {"/": ("index.html", "text/html; charset=utf-8")} | {
+        f"/{item.name}": (item.name, "text/javascript; charset=utf-8" if item.name.endswith(".js") else "text/css; charset=utf-8")
+        for item in web.iterdir() if re.fullmatch(r"[a-z][a-z0-9-]*\.(js|css)", item.name)}
 
     class Handler(BaseHTTPRequestHandler):
         server_version = f"HEIMDALL/{__version__}"
