@@ -100,6 +100,7 @@ python3 -m unittest discover -s tests -t .
 | `docs/SCIENCE_METHODS.md` | every method explained, with formulas, assumptions and failure conditions |
 | `docs/USAGE.md` | setup, CLI reference, configuration, walkthrough |
 | `docs/NASA_TARGETS.md`, `docs/NASA_TARGET_MATRIX.md`, `docs/NASA_ACCEPTANCE.md`, `docs/REQUIREMENTS_LEDGER.md` | target investigations: method, results, acceptance scenarios, traceability |
+| `docs/DATA_SERVICE.md` | readiness-first SPHEREx data service: inventory, verified store, durable jobs/retries, worker, freshness, retention, operator workflow |
 | `docs/OUTPUT_SCHEMA.md` | investigation, sky-map, playback and validation record schemas (the UI contract) |
 
 ## Secrets

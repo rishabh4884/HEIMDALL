@@ -4,16 +4,16 @@ Generated from saved results by `python3 -m heimdall target matrix`. Every state
 
 ## NASA-01 Barnard's Star (MOVING_OBJECT)
 
-- Investigation: `tinv:NASA-01:88a6ee56`; execution **COMPLETED**, test **LIMITED_BY_DATA** (motion analysis not assessable: FEWER_THAN_3_USABLE_POINTS, FEWER_THAN_2_EPOCHS, BASELINE_BELOW_20_DAYS)
+- Investigation: `tinv:NASA-01:fd9680e5`; execution **COMPLETED**, test **LIMITED_BY_DATA** (motion analysis not assessable: FEWER_THAN_3_USABLE_POINTS, FEWER_THAN_2_EPOCHS, BASELINE_BELOW_20_DAYS)
 - Identification: Gaia DR3 4472832130942575872 (Gaia DR3), status RESOLVED
 - Position at reference epoch 2016.0: RA 269.448503 Dec 4.739420; PM (-801.6, 10362.4) mas/yr [Gaia DR3 catalogue]
-- SPHEREx observations found 120, selected 9, measured 9; MJD 60902.9-61305.6; epochs 6; releases {'spherex_dr1': 78, 'spherex_qr3': 42}; detectors {'2': 61, '3': 59}
-- Products retrieved: 9 (origins ['LIVE']); wavelengths measured (um): [1.101, 1.445, 1.511, 1.512, 1.65, 1.793, 2.106, 2.307]
-- Quality flags in footprints: {'BLOOM': 9, 'OVERFLOW': 9, 'SOURCE': 9, 'SUR_ERROR': 9, 'TRANSIENT': 9}
-- Motion: **NOT_ASSESSABLE**; usable 0/9, baseline 0.0 d; fitted v None vs catalogue None arcsec/yr; control null: COMPLETED ['FEWER_THAN_3_USABLE_POINTS', 'FEWER_THAN_2_EPOCHS', 'BASELINE_BELOW_20_DAYS']
-- Variability: **NOT_ASSESSABLE** (no comparable series has at least the minimum points and epochs); 0 usable points, 7 epochs, 0 comparable series; period: SAMPLING_ADEQUATE_FOR_SEARCH_ONLY; caveats: ['9 of 9 measured images have saturation/non-linearity flags in the PSF footprint (excluded from tests)', 'single detector in the usable measurements (no cross-detector calibration check)', 'field error scale not estimated (0 comparable series with dof >= 2 (minimum 10)); formal flux errors used']
-- Blind pipeline: FAILED run `None`; detections near expected target None/None
-- Detectability: {'max': 260.4878270189653, 'median': 148.93438931389178, 'n_ge_3': 8, 'n_ge_5': 8}
+- SPHEREx observations found 130, selected 10, measured 7; MJD 60902.9-61305.6; epochs 6; releases {'spherex_dr1': 84, 'spherex_qr3': 46}; detectors {'2': 67, '3': 63}
+- Products retrieved: 10 (origins ['CACHED']); wavelengths measured (um): [1.445, 1.511, 1.512, 1.793, 2.106, 2.307]
+- Quality flags in footprints: {'BLOOM': 7, 'OVERFLOW': 7, 'SOURCE': 7, 'SUR_ERROR': 7, 'TRANSIENT': 7}
+- Motion: **NOT_ASSESSABLE**; usable 0/10, baseline 0.0 d; fitted v None vs catalogue None arcsec/yr; control null: COMPLETED ['FEWER_THAN_3_USABLE_POINTS', 'FEWER_THAN_2_EPOCHS', 'BASELINE_BELOW_20_DAYS']
+- Variability: **NOT_ASSESSABLE** (no comparable series has at least the minimum points and epochs); 0 usable points, 6 epochs, 0 comparable series; period: SAMPLING_ADEQUATE_FOR_SEARCH_ONLY; caveats: ['7 of 7 measured images have saturation/non-linearity flags in the PSF footprint (excluded from tests)', 'single detector in the usable measurements (no cross-detector calibration check)', 'field error scale not estimated (0 comparable series with dof >= 2 (minimum 10)); formal flux errors used']
+- Blind pipeline: PARTIAL run `R20261115T063200-a11cf992`; detections near expected target 0/7
+- Detectability: {'max': 260.4878270189653, 'median': 157.0733153987506, 'n_ge_3': 6, 'n_ge_5': 6}
 - Hypotheses: Insufficient evidence [SUPPORTED]; Moving as the catalogue predicts [NOT_ASSESSABLE]; Stationary source [NOT_ASSESSABLE]; Registration or astrometric artefact [NOT_ASSESSABLE]
 - Conclusion: The selected observations do not allow a valid test for Barnard's Star. This is a measurement within stated limits, not a new finding.
 - Reproduce: `python3 -m heimdall target run NASA-01`

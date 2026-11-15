@@ -113,6 +113,25 @@ def select_observations(observations: list, n_max: int, gap_days: float) -> tupl
                     "n_epochs_available": len(epochs), "n_groups": len(keys), "picks_per_group": per, "n_selected": len(chosen), "n_available": len(obs)}
 
 
+def coordinate_only_reference(spec, failed_ref):
+    """An arbitrary coordinate with no catalogue entry: stationary, never presented as catalogued."""
+    return ReferenceAstrometry(target_id=spec.target_id, catalogue="coordinate", status="COORDINATE_ONLY", reason=failed_ref.reason, source_id=None,
+                               ra_deg=spec.seed_ra_deg, dec_deg=spec.seed_dec_deg, epoch_jyear=2000.0, epoch_mjd=astrometry.jyear_to_mjd(2000.0),
+                               pm_source="none: stationary assumed", selection_rule=failed_ref.selection_rule, service=failed_ref.service)
+
+
+def cutout_geometry(spec, ref, opts, selected: list):
+    """Cutout centre (reference position at the median selected epoch), side length and motion span. Shared with the data service so that
+    the products it acquires are exactly the ones the analysis asks for."""
+    t_sel = [_obs_time(o) for o in selected]
+    t_mid = float(np.median(t_sel))
+    cen = ref.at_mjd(t_mid)
+    pm_tot = math.hypot(ref.pmra_mas_yr or 0.0, ref.pmdec_mas_yr or 0.0) / 3.6e6  # deg/yr
+    span_deg = pm_tot * (max(t_sel) - min(t_sel)) / 365.25
+    size = opts.cutout_size_deg or max(spec.cutout_size_deg, 2.0 * span_deg + 0.04)
+    return cen, min(size, 0.3), t_mid, span_deg
+
+
 def _coverage_summary(all_obs: list, selected: list, gap_days: float) -> dict:
     times = [_obs_time(o) for o in all_obs if math.isfinite(_obs_time(o))]
     epochs, _ = build_epochs([(o.obs_id, _obs_time(o)) for o in all_obs if math.isfinite(_obs_time(o))], gap_days)
@@ -227,7 +246,7 @@ def _blind_pipeline(engine_parts: dict, selected_ids: list[str], center: tuple[f
 
 
 def investigate_target(spec: TargetSpec, *, source: DataSource, settings: Settings, config: EngineConfig, registry, store, options: TargetOptions | None = None,
-                       progress=None, cancel=None) -> dict:
+                       progress=None, cancel=None, input_manifest: dict | None = None) -> dict:
     opts = options or TargetOptions()
     t_start = time.monotonic()
     created = datetime.now(UTC)
@@ -240,16 +259,14 @@ def investigate_target(spec: TargetSpec, *, source: DataSource, settings: Settin
 
     gaia_svc = CachedService("gaia", settings)
     catwise_svc = CachedService("catwise", settings)
-    result: dict = {"schema": TARGET_SCHEMA, "software_version": __version__, "methods_version": TARGET_METHODS_VERSION, "created_at": created.isoformat(),
+    result: dict = {"schema": TARGET_SCHEMA, "input_manifest": input_manifest, "software_version": __version__, "methods_version": TARGET_METHODS_VERSION, "created_at": created.isoformat(),
                     "target": spec.to_dict(), "options": opts.to_dict(), "config_hash": config.hash, "status": {"execution": "RUNNING", "test_status": None},
                     "events": events, "warnings": [], "failed_items": []}
     # 1. reference astrometry --------------------------------------------------------------
     note("resolving reference astrometry")
     ref = astrometry.resolve(spec, catwise_svc if spec.catalogue == "catwise2020" else gaia_svc, gaia_service=gaia_svc)
     if not ref.resolved and spec.target_id.startswith("COORD-"):
-        ref = ReferenceAstrometry(target_id=spec.target_id, catalogue="coordinate", status="COORDINATE_ONLY", reason=ref.reason, source_id=None,
-                                  ra_deg=spec.seed_ra_deg, dec_deg=spec.seed_dec_deg, epoch_jyear=2000.0, epoch_mjd=astrometry.jyear_to_mjd(2000.0),
-                                  pm_source="none: stationary assumed", selection_rule=ref.selection_rule, service=ref.service)
+        ref = coordinate_only_reference(spec, ref)
     result["reference"] = ref.to_dict()
     if spec.nasa_reference_position:
         result["reference"]["external_reference_position"] = spec.nasa_reference_position
@@ -285,13 +302,7 @@ def investigate_target(spec: TargetSpec, *, source: DataSource, settings: Settin
     result["coverage"] = _coverage_summary(list(disc.observations), selected, config.temporal.epoch_gap_days)
     result["selection"] = rule
     # 3. cutout geometry --------------------------------------------------------------------
-    t_sel = [_obs_time(o) for o in selected]
-    t_mid = float(np.median(t_sel))
-    cen = ref.at_mjd(t_mid)
-    pm_tot = math.hypot(ref.pmra_mas_yr or 0.0, ref.pmdec_mas_yr or 0.0) / 3.6e6  # deg/yr
-    span_deg = pm_tot * (max(t_sel) - min(t_sel)) / 365.25
-    size = opts.cutout_size_deg or max(spec.cutout_size_deg, 2.0 * span_deg + 0.04)
-    size = min(size, 0.3)
+    cen, size, t_mid, span_deg = cutout_geometry(spec, ref, opts, selected)
     result["cutout"] = {"center_ra_deg": cen.ra_deg, "center_dec_deg": cen.dec_deg, "center_mjd": t_mid, "size_deg": size,
                         "size_pixels_approx": round(size * 3600.0 / 6.15), "motion_span_deg": span_deg,
                         "transfer_note": "cutout size scales the transfer with its area; full frames are never retrieved"}
@@ -366,7 +377,7 @@ def investigate_target(spec: TargetSpec, *, source: DataSource, settings: Settin
     result["coverage"]["n_excluded"] = sum(1 for m in measurements if m["status"] in ("EXCLUDED", "UNUSABLE"))
     result["coverage"]["wavelengths_um"] = sorted({round(m["wavelength_um"], 3) for m in measurements if m.get("wavelength_um")})
     result["coverage"]["quality_flag_counts"] = _flag_counts(measurements)
-    result["data_origin"] = "SYNTHETIC" if source.source_id == "local-fits" and any(p["origin"] == "SYNTHETIC_TEST_FIXTURE" for p in products) else ("REAL" if products else None)
+    result["data_origin"] = "SYNTHETIC" if any(p["origin"] == "SYNTHETIC_TEST_FIXTURE" for p in products) else ("REAL" if products else None)
     # 6. context -----------------------------------------------------------------------------
     neighbours = [c for m in measurements for c in (m.get("contamination") or [])]
     cont = {"n_with_neighbour": sum(1 for m in measurements if m.get("contamination")), "closest_arcsec": min((c["separation_arcsec"] for c in neighbours), default=None),

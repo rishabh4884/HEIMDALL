@@ -345,7 +345,9 @@ class IrsaSpherexSource(DataSource):
                              "energy_bounds_lower": str(em_min), "energy_bounds_upper": str(em_max),
                              "time_bounds_lower": str(t_min), "time_bounds_upper": str(t_max),
                              "provenance_version": version.group(1) if version else "",
-                             "uri": uri, "contentchecksum": "", "contentlength": ""})
+                             "uri": uri, "contentchecksum": "", "contentlength": "",
+                             "footprint": (raw.get("s_region") or "").strip(), "s_ra": (raw.get("s_ra") or "").strip(),
+                             "s_dec": (raw.get("s_dec") or "").strip()})
         self._from_cache = bool(from_cache) and all(from_cache)
         return rows
 
@@ -512,6 +514,10 @@ class IrsaSpherexSource(DataSource):
         }
         if row.get("provenance_version", "").strip():
             md["pipeline_version"] = src(row["provenance_version"].strip(), ValueClass.CATEGORICAL)
+        if row.get("footprint", "").strip():  # SIA2 s_region (ICRS polygon): lets the local inventory answer region queries offline
+            md["footprint"] = src(row["footprint"].strip(), ValueClass.CATEGORICAL)
+        if row.get("s_ra", "").strip() and row.get("s_dec", "").strip():
+            md["footprint_centre_deg"] = src(f"{float(row['s_ra']):.8f},{float(row['s_dec']):.8f}", ValueClass.CATEGORICAL)
         if row.get("contentlength", "").strip():
             md["file_size_bytes"] = src(int(float(row["contentlength"])), ValueClass.COUNT)
         return Observation(obs_id=obs_id, source_id=SOURCE_ID, provenance=prov, metadata=md)

@@ -1,0 +1,123 @@
+# SPHEREx data service (readiness-first access, durable acquisition)
+
+Code: `heimdall/dataservice/` (+ `heimdall/targets/prepare.py`). CLI: `python3 -m heimdall data ...`. API: `Engine.data_service()`,
+`Engine.investigate_target(...)`, `Engine.investigation_status(job_id)`.
+
+## The guarantee, and its limit
+
+A user submits an investigation **once**. HEIMDALL, not the user, owns acquisition, retries, provenance and the eventual terminal status.
+The request either (a) runs immediately from verified local data, (b) is accepted and prepared asynchronously while the service keeps
+retrying the archive, or (c) ends in a durable, precise terminal state. An archive outage does not propagate as a user-facing error and
+never requires resubmission. `must_resubmit` is always `false` in the status contract.
+
+**What this does not do:** it does not eliminate the external outage. Data that were never ingested cannot be produced while *every*
+upstream route is down; such a request stays `PREPARING_DATA` (with its next scheduled attempt visible) until the archive recovers or the
+configured deadline gives `UNAVAILABLE_AFTER_DEADLINE`. Only regions/products already in the local store are served with an archive
+outage in progress. Nothing is claimed about all-sky availability: the inventory covers only regions that have been indexed.
+
+## Architecture and responsibilities
+
+| Component | File | Responsibility |
+|---|---|---|
+| Persistence | `db.py` | One SQLite file (WAL): inventory, syncs, product index, pins, manifests, jobs, job events, route events, counters. |
+| Inventory | `inventory.py` | Observation records (id, release/collection, detector, footprint polygon, time/spectral bounds, route, access reference, archive checksum, product version, source version, origin, supersession) and **syncs** (completed archive discoveries). Region queries are answered locally from a covering sync; no covering sync means "not indexed", never "no observations". |
+| Product store | `productstore.py` | Content-addressed (`objects/<sha[:2]>/<sha256>.fits`), atomic, verified before visibility (SHA-256, FITS-openable with every HDU read, optional archive MD5 match). Deduplicates identical bytes, quarantines rejects, pins objects used by manifests, reports quota. |
+| Jobs | `jobs.py` | Durable idempotent jobs with the state machine below, leases, persisted history, exponential backoff with jitter. |
+| Service | `service.py` | Readiness checks (no network), `ensure_index`, `ensure_products`, `prefetch`, `sync`, `tick`/`work` (the worker), manifests, metrics, freshness. |
+| Local source | `localsource.py` | A `DataSource` that serves only inventory-indexed observations and verified store objects. The scientific engine sees this, not IRSA. |
+| Target layer | `targets/prepare.py` | Readiness-first investigation: resolve -> index -> plan -> acquire -> freeze manifest -> analyse offline. Registers the `TARGET_INVESTIGATION` job handler. |
+| IRSA adapter | `data_access/irsa_spherex.py` | Route logic (SIA2 first for DR1/QR3, bounded TAP fallback), per-route timeouts, jittered backoff, circuit breakers, cached discovery. Only workers use it. |
+
+Request path (no archive access): `readiness` -> inventory + store. Worker path (the only code that touches IRSA): discovery, download,
+validation, registration. The scientific engine runs from a **frozen, content-hashed input manifest** (`heimdall.input_manifest/1.0`):
+every result carries `input_manifest` with each product's SHA-256, release, route, access reference, retrieval time and the index sync used.
+
+## State machine
+
+```
+QUEUED -> DISCOVERING -> DOWNLOADING <-> VALIDATING -> COMPLETE
+   \            \             \
+    \            +--------------> PREPARING_DATA  (upstream failed; next attempt scheduled; back to DISCOVERING/DOWNLOADING when due)
+     +--> NO_COVERAGE (a *successful* discovery found nothing)       PREPARING_DATA --(deadline)--> UNAVAILABLE_AFTER_DEADLINE
+     +--> INVALID_SOURCE_DATA (retrieved data failed validation)     any non-terminal --> CANCELLED
+```
+
+* `COMPLETE`: all required verified local data exist (a *readiness* of `READY`). `NO_COVERAGE`, `UNAVAILABLE_AFTER_DEADLINE`,
+  `INVALID_SOURCE_DATA`, `CANCELLED` are terminal; illegal transitions raise. A route failure is **never** `NO_COVERAGE`.
+* A terminal `UNAVAILABLE_AFTER_DEADLINE`/`CANCELLED` job is revived (generation + 1, history kept) only by a *new* submission; a `COMPLETE`
+  job is reopened only if its data are no longer present locally.
+* Composite jobs: `PREFETCH` and `TARGET_INVESTIGATION` own child `INDEX`/`ACQUIRE` jobs, wait on them (`PREPARING_DATA` with the child's next
+  attempt time) and finish with the same terminal vocabulary.
+* Idempotency: the job id is a hash of (kind, canonical payload), so the same request returns the same active or completed job; a duplicate
+  never starts a second download. Content already in the store is not downloaded again.
+* Crash recovery: running states hold a lease; `resume()` (called by `work`) returns expired-lease jobs to `QUEUED`. Per-product progress is
+  persisted, so finished downloads are not repeated.
+* Retries: exponential backoff `base * 2^(n-1)` capped, plus up to 25 % jitter (`HEIMDALL_DS_BACKOFF_*`), never earlier than an open circuit
+  breaker's remaining cooldown; route switching and breakers live in the adapter; the finite deadline (`HEIMDALL_DS_DEADLINE_S`, default 6 h)
+  bounds everything. A user request never runs an unbounded network loop; `--wait` runs the worker inline for at most the stated seconds.
+
+## User-facing readiness contract (`heimdall.data_status/1.0`)
+
+`readiness` is one of `READY`, `PREPARING`, `NO_COVERAGE`, `UNAVAILABLE_AFTER_DEADLINE`, `INVALID_SOURCE_DATA`, `CANCELLED`, with a user-safe
+`message`, the `job` (state, attempts, next attempt time and seconds, last error, progress), `must_resubmit: false`, and for target
+investigations a `status.execution` compatible with the existing result schema (`PREPARING_DATA` while preparing). Structured technical
+detail (HTTP status, route, error class) stays in `job.last_error`, the job `events`, and `data status`. A completed investigation is the
+normal `heimdall.target_investigation/1.0` result plus `data_status` and `input_manifest`.
+
+* All data local: the analysis runs offline (zero archive calls) or a stored identical result (same target, options, config, manifest) is returned.
+* Otherwise: a durable job id is returned immediately.
+* Offline process (`HEIMDALL_OFFLINE=1`): same contract; the job waits `QUEUED` for a worker with archive access.
+* A stale index (older than `HEIMDALL_DS_INDEX_MAX_AGE_S`, default 7 days) still answers immediately and queues a background refresh job.
+* Catalogue references (Gaia/CatWISE) and the Gaia field-star query are cached by their own services; an uncached one makes the request
+  wait for a worker (it is never silently skipped). JPL/other context is read from cache offline and recorded as unavailable if absent.
+
+## Freshness and completeness
+
+`data freshness [--ra --dec --radius]` reports, per indexed region: collections indexed, last successful refresh, newest observation time
+represented, route, whether the discovery came from cache, staleness, and whether a refresh is delayed by upstream failure. It states that
+the data are a local inventory (cached archive answers), not a live query, that `all_sky_complete` is false, and that completeness holds only for
+the listed regions as of their refresh times (IRSA's SIA2 availability itself lags new data by about a day). Data are never labelled live once stored:
+provenance origin is `CACHED`, with the original acquisition origin/route in the notes and the manifest.
+
+## Operator workflow
+
+```
+python3 -m heimdall data prefetch --ra R --dec D --radius 0.05 [--detectors 2] --cutout-size 0.1 --max-observations 16 [--wait 300]   # explicit ingestion
+python3 -m heimdall target run NASA-01 [--wait 60]          # user request: returns the result, or a durable job id (never "retry")
+python3 -m heimdall data work --max-seconds 1700           # worker: resume interrupted jobs, run due jobs/retries until idle or budget (run from cron/systemd/k8s)
+python3 -m heimdall data jobs [--state PREPARING_DATA]     # queue; `data job JOB_ID` shows state, attempts, next attempt, events
+python3 -m heimdall data sync [--max-age-s S]              # queue refresh jobs for indexed regions older than S (then run `data work`)
+python3 -m heimdall data status                            # metrics + freshness: queue depth/age, retries, route health, cache hit rate, bytes, validation failures
+python3 -m heimdall data freshness --ra R --dec D --radius X
+python3 -m heimdall data manifest man:...                  # the exact inputs of an analysis
+python3 -m heimdall data cancel JOB_ID | resume | evict [--target-bytes N] [--dry-run]
+```
+
+Modes: **on-demand** (a user request creates jobs), **prefetch** (`data prefetch`), **sync** (`data sync` + `data work`), **offline**
+(`HEIMDALL_OFFLINE=1`: everything from the local inventory/store; nothing touches the network). `work` is a bounded, schedulable function
+(`DataService.work`/`tick`), not a daemon: run it periodically from any scheduler. Recovery after an outage needs no operator action beyond
+having a worker running; `data jobs --state PREPARING_DATA` shows what is waiting and when it will next be tried.
+
+## Storage, retention, quota, scaling
+
+* Local layout: `<state_dir>/dataservice/service.sqlite3` and `store/{objects,quarantine,tmp}`. The discovery-response cache and the adapter's
+  download cache (`<cache_dir>`) remain separate and may be cleared; the verified store is the durable copy.
+* Pinning: producing a manifest pins every product and calibration it lists; pinned objects are never evicted. `data evict` removes only unpinned
+  objects (least recently validated first) down to `--target-bytes`/`HEIMDALL_DS_QUOTA_BYTES`; a quota is **reported** (`over_quota`), never enforced
+  by silent eviction. Saved investigations therefore keep their inputs.
+* Integrity: size is re-checked on every read (a modified/truncated file is not served); `verify` re-hashes. Corrupt, truncated, non-FITS or
+  checksum-mismatching downloads are quarantined and retried up to `corrupt_retries` times, then excluded (listed in the manifest) or, if nothing
+  usable remains, the job ends `INVALID_SOURCE_DATA`.
+* Scale: the store is cutout-based (a 0.05-0.3 degree cutout is ~4-10 MB per exposure with its extensions); the SQLite design is for one
+  machine/one worker group. Migration path: replace `ServiceDB` with PostgreSQL/PostGIS (footprints as geography, `s_ra/s_dec` + polygon text as a
+  spatial index; `syncs.members` as a join table) and `objects/` with an object store keyed by SHA-256 (S3/GCS); `Inventory`, `ProductStore`
+  and `JobQueue` are the only classes that issue SQL. Multiple workers need `SELECT ... FOR UPDATE SKIP LOCKED` job claims (the lease columns are in place).
+  Mirroring the whole survey is a separate capacity decision; nothing here assumes it.
+
+## Scientific provenance and reproducibility
+
+Every stored product records release, access reference, route, archive checksum (if any), locally computed SHA-256 and retrieval time;
+the manifest id is a hash of its content, so identical inputs give an identical id. QR2 is not searchable and is never indexed as current data
+(legacy-release rows are rejected from the current inventory); DR1 supersedes QR3 for the same exposure and the superseded row is kept and marked,
+never silently mixed. Synthetic fixtures use a separate `synthetic` scope and keep their synthetic origin end to end. Stored results are
+provisional pipeline measurements; the data service adds no scientific validation.

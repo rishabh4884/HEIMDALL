@@ -147,10 +147,27 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--cutout-size", type=float)
     s.add_argument("--max-seconds", type=float, default=1800.0, help="stop starting new retrievals after this many seconds (result is PARTIAL)")
     s.add_argument("--no-blind", action="store_true", help="skip the blind HEIMDALL pipeline run on the same exposures")
+    s.add_argument("--wait", type=float, default=0.0, metavar="SECONDS", help="run the data worker inline for at most this long; on expiry the durable job id and "
+                   "status are returned (the request keeps being worked on; do not resubmit)")
     s.add_argument("--no-context", action="store_true")
     s.add_argument("--write", type=Path, help="matrix: write markdown here")
     s.add_argument("--json", action="store_true")
     s.add_argument("--quiet", action="store_true")
+    s = sub.add_parser("data", help="SPHEREx data service: inventory, jobs, worker, prefetch, sync, freshness, retention")
+    s.add_argument("action", choices=["status", "freshness", "jobs", "job", "work", "prefetch", "sync", "cancel", "evict", "manifest", "resume", "index"])
+    s.add_argument("ref", nargs="?", help="job id (job, cancel) or manifest id (manifest)")
+    s.add_argument("--ra", type=float)
+    s.add_argument("--dec", type=float)
+    s.add_argument("--radius", type=float, default=0.05)
+    s.add_argument("--detectors")
+    s.add_argument("--cutout-size", type=float)
+    s.add_argument("--max-observations", type=int, default=16)
+    s.add_argument("--max-seconds", type=float, default=300.0, help="work: wall-time budget for this worker run")
+    s.add_argument("--wait", type=float, default=0.0, metavar="SECONDS", help="prefetch/index: run the worker inline for at most this long")
+    s.add_argument("--state", help="jobs: filter by state")
+    s.add_argument("--max-age-s", type=float, help="sync: refresh regions older than this")
+    s.add_argument("--target-bytes", type=int, help="evict: reduce unpinned storage to this size (default: the configured quota)")
+    s.add_argument("--dry-run", action="store_true")
     s = sub.add_parser("runs", help="list stored investigations")
     s.add_argument("--json", action="store_true")
     s = sub.add_parser("inspect", help="inspect a stored investigation")
@@ -241,6 +258,8 @@ def _run(args) -> int:
         _print_summary(summarize(result))
         print(f"  saved to {run_dir}")
         return 0 if result["status"]["execution"] != "FAILED" else 1
+    elif args.command == "data":
+        return _data(engine, args)
     elif args.command == "target":
         return _target(engine, args)
     elif args.command == "runs":
@@ -316,6 +335,41 @@ def _run(args) -> int:
     return 0
 
 
+def _data(engine, args) -> int:
+    from .dataservice.schemas import JobState, RegionSpec
+    svc = engine.data_service()
+    if args.action == "status":
+        _print({"metrics": svc.metrics(), "freshness": svc.freshness()}, True)
+    elif args.action == "freshness":
+        reg = RegionSpec(args.ra % 360.0, args.dec, args.radius, tuple(_ints(args.detectors)) if args.detectors else None) if args.ra is not None else None
+        _print(svc.freshness(reg), True)
+    elif args.action == "jobs":
+        want = {JobState(args.state)} if args.state else None
+        _print([svc.describe_job(j) for j in svc.jobs.list(want)], True)
+    elif args.action == "job":
+        _print(svc.job_status(args.ref), True)
+    elif args.action == "cancel":
+        _print(svc.describe_job(svc.jobs.cancel(args.ref)), True)
+    elif args.action == "resume":
+        _print({"resumed": svc.resume()}, True)
+    elif args.action == "work":
+        _print(svc.work(args.max_seconds), True)
+    elif args.action == "sync":
+        _print({"queued_refresh_jobs": [j["job_id"] for j in svc.sync(max_age_s=args.max_age_s)]}, True)
+    elif args.action == "evict":
+        _print(svc.store.evict(target_bytes=args.target_bytes, dry_run=args.dry_run), True)
+    elif args.action == "manifest":
+        _print(svc.manifest(args.ref), True)
+    else:  # index | prefetch
+        if args.ra is None or args.dec is None:
+            print("error: --ra and --dec are required", file=sys.stderr)
+            return 2
+        region = RegionSpec(args.ra % 360.0, args.dec, args.radius, tuple(_ints(args.detectors)) if args.detectors else None)
+        _print(svc.ensure_index(region, wait_s=args.wait) if args.action == "index" else
+               svc.prefetch(region, cutout_size_deg=args.cutout_size, max_observations=args.max_observations, wait_s=args.wait), True)
+    return 0
+
+
 def _target(engine, args) -> int:
     if args.action == "list":
         for t in engine.targets():
@@ -341,7 +395,16 @@ def _target(engine, args) -> int:
     res = engine.investigate_target(args.target, ra=args.ra, dec=args.dec, category=args.category, source_id=args.source, local_root=args.local_root,
                                     progress=progress, max_observations=args.max_observations, detectors=tuple(_ints(args.detectors)) if args.detectors else None,
                                     mjd_start=args.mjd_start, mjd_end=args.mjd_end, cutout_size_deg=args.cutout_size, max_seconds=args.max_seconds,
-                                    blind_pipeline=not args.no_blind, context=not args.no_context)
+                                    blind_pipeline=not args.no_blind, context=not args.no_context, wait_s=args.wait)
+    if "investigation_id" not in res:  # accepted, not finished: a durable job owns acquisition and retries
+        if args.json:
+            _print(res, True)
+        else:
+            j = res.get("job") or {}
+            print(f"{res['readiness']}  job={j.get('job_id')}  state={j.get('state')}  attempts={j.get('attempts')}  next_attempt_in_s={j.get('next_attempt_in_s')}")
+            print(f"  {res['message']}")
+            print(f"  progress: python3 -m heimdall data job {j.get('job_id')}    worker: python3 -m heimdall data work")
+        return 0 if res["readiness"] in ("PREPARING", "NO_COVERAGE", "READY") else 1
     if args.json:
         _print(res, True)
     else:

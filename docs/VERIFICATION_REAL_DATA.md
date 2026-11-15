@@ -1,5 +1,32 @@
 # Real-data verification: public SPHEREx QR2 data from IRSA (2026-10-29)
 
+## Data-service verification (2026-11-15, UTC; records in `.heimdall/verification/2026-11-15-dataservice/`)
+
+Design and guarantee: `docs/DATA_SERVICE.md`. Everything below is a real IRSA run through the service; no result is independently validated.
+
+- **Service-owned prefetch.** `python3 -m heimdall data prefetch --ra 269.4485 --dec 4.7394 --radius 0.02 --detectors 2 --cutout-size 0.05
+  --max-observations 3 --wait 240` (06:16:37-06:17:22Z, 45 s wall): the job `job:prefetch:25966130399a` indexed the region through **SIA2**
+  (63 detector-2 observations), acquired three real 0.05-degree cutouts (`2025W34_2B_0090_4D2` DR1, `2026W12_1A_0311_3D2` DR1, `2026W39_1A_0371_1D2` QR3)
+  and the detector-2 ePSF, verified (SHA-256, every FITS HDU read) and registered them, and froze manifest `man:5921cd2c79097dab`. The SHA-256 of
+  `2026W12_1A_0311_3D2` (`8ddfd712...`) equals the one recorded by the earlier smoke check: identical bytes on a second, independent download.
+  Repeating the command with `HEIMDALL_OFFLINE=1` returned `READY` from the local store (`from_local_store: true`) with no archive access.
+- **Outage handled by the service.** The `INDEX` job for NASA-01's analysis footprint failed on its first attempt (SIA2 HTTP 502 and TAP HTTP 502/timeout,
+  recorded in `last_error`), was left `PREPARING_DATA`, and the worker (`python3 -m heimdall data work`) retried it automatically; attempt 2
+  succeeded through SIA2 (sync completed 06:20:04Z). Route events over the session: SIA2 5 requests (3 ok, 2 x 502), TAP 2 (0 ok: 1 timeout, 1 x 502),
+  direct product cutouts 13/13 ok, calibration 1/1 ok; validation failures 0.
+- **NASA-01 as an end-to-end acceptance test (not a duplicate run):** `target run NASA-01 --wait 0` returned immediately with
+  `job:target_investigation:47f2d903a4e8` ("accepted ... you do not need to resubmit"); the same call with `HEIMDALL_OFFLINE=1` returned the same job
+  (`QUEUED`, "a worker with archive access will acquire the data"); `data work` then ran resolution, both indexes, acquisition of 10 products + 2 ePSFs
+  and the analysis; a final `HEIMDALL_OFFLINE=1 target run NASA-01` returned the completed result `tinv:NASA-01:fd9680e5` served from verified local data
+  (`data_status.served_from: "verified local data (no archive request)"`). A first run exposed a defect (the blind pipeline discovers over the cutout footprint,
+  which was not indexed, so it failed with "region is not indexed locally"); the footprint is now indexed as part of preparation and the rerun gave a
+  `PARTIAL` blind pipeline (7 images covered, 0 blind detections near the expected position; Barnard's Star is saturation-flagged in all 7).
+  The result: 130 observations found (84 DR1, 46 QR3; the earlier TAP-based run found 120), 10 selected, 7 measured, `LIMITED_BY_DATA` (no usable motion or variability
+  test). Product origins are reported `CACHED` (stored locally), with the original `LIVE` acquisition in the manifest. The earlier completed result
+  `tinv:NASA-01:88a6ee56` is kept in its per-id file; the superseded blocked attempt is `latest_attempt.json`.
+- **Not done:** NASA-02..05 were not rerun through the service (their saved results are unchanged); the TAP-up/SIA2-down direction was not observed live;
+  the catalogue-outage wait path (uncached Gaia/CatWISE while down) is covered by logic and the offline-user-path test, not by a live outage.
+
 ## IRSA access stabilisation and NASA-target runs (2026-11-15, UTC)
 
 This section supersedes the earlier "access recheck" note. It does **not** alter the historical QR2 validation below. Everything here is

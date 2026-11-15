@@ -170,9 +170,31 @@ class Engine:
         """Run the target investigation (see heimdall.targets.investigate). ``options`` are TargetOptions fields."""
         from .targets.investigate import TargetOptions, investigate_target
         spec = self._target_spec(ref, ra, dec, category)
+        wait_s = float(options.pop("wait_s", 0.0) or 0.0)
         opts = TargetOptions(**{k: v for k, v in options.items() if v is not None})
+        if source_id == "irsa-spherex":
+            # Readiness-first: the live archive is never on this call's critical path. Ready -> result now; otherwise a durable job that owns the retries.
+            from .targets import prepare
+            return prepare.request_investigation(self.data_service(source_id), spec, opts, settings=self.settings, config=self.config, registry=self.validation,
+                                                 store=self.store, wait_s=wait_s, progress=progress)
         return investigate_target(spec, source=self.source(source_id, local_root), settings=self.settings, config=self.config, registry=self.validation,
                                   store=self.store, options=opts, progress=progress, cancel=cancel)
+
+    # -- data service (readiness-first access to verified local SPHEREx data) -------------------------
+    def data_service(self, source_id: str = "irsa-spherex"):
+        """The durable data service (inventory, verified store, jobs). Offline settings give a service that never touches the archive."""
+        from .dataservice.schemas import ServiceConfig
+        from .dataservice.service import DataService
+        from .targets import prepare
+        if getattr(self, "_ds", None) is None:
+            source = None if self.settings.offline else self.source(source_id)
+            self._ds = DataService(Path(self.settings.state_dir) / "dataservice", source, ServiceConfig.from_env(), offline=self.settings.offline)
+            self._ds.handlers[prepare.KIND_TARGET] = prepare.make_handler(settings=self.settings, config=self.config, registry=self.validation, store=self.store)
+        return self._ds
+
+    def investigation_status(self, job_id: str) -> dict:
+        from .targets import prepare
+        return prepare.investigation_status(self.data_service(), job_id)
 
     def runs(self) -> list[dict]:
         return self.store.list()
