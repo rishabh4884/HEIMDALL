@@ -20,8 +20,8 @@ requirement IDs, deferrals). The requirement-to-code-to-test-to-evidence matrix 
 |---|---|---|---|
 | M1 | Ledger/plan docs; resolve `must_resubmit` vs deadline contradiction (service-owned recovery); long-running worker with heartbeat, graceful stop, deployment examples | Spec §7: a queue that only moves when someone runs a command is not automatic; `must_resubmit:false` was untrue after a deadline | done, pushed `c4a4751` |
 | M2 | Stdlib HTTP JSON transport over `Engine` (status, targets, submit/reconnect, results, jobs, cancel, coverage from the local index) with bounded inputs | Frontend integration tonight needs a transport; none existed | done, pushed `91ee79d` |
-| M3 | Live/cached verification of the end-to-end path through the service (one real workflow; offline repeat) | DoD 3/4 | planned |
-| M4 | NASA target records: honesty review of saved JSON, regenerate matrix from saved JSON only, acceptance doc | DoD 5/6 | done (see below) |
+| M3 | Live/cached verification of the end-to-end path through the service (one real workflow; offline repeat) | DoD 3/4 | in progress (see below); fixes found by it pushed |
+| M4 | NASA target records: honesty review of saved JSON, regenerate matrix from saved JSON only, acceptance doc | DoD 5/6 | done, pushed `05940e6` |
 | M5 | Full suite, diff review, handoff (`docs/FRONTEND_HANDOFF.md`), push | DoD 8/9 | planned |
 
 ## Milestones
@@ -66,6 +66,31 @@ requirement IDs, deferrals). The requirement-to-code-to-test-to-evidence matrix 
   (claimed NASA-05 blocked; it completed) and annotated the NASA-02 row in `docs/VERIFICATION_REAL_DATA.md`.
 - Tests: full suite 485 OK (5 live skipped).
 
+### M3 — live verification and the defects it exposed
+
+Fixes found by running the real service (each with a regression test, full suite green before each push):
+
+| Commit | Defect observed live | Fix |
+|---|---|---|
+| `1c0e47d` | Gaia outage (IRSA TAP and ESA both timing out): the worker's inner HTTP retries held the single worker ~12 min per attempt; other jobs starved | worker catalogue calls make one bounded attempt (no inner retries, 30 s timeout); the job owns retries (`CATALOGUE_PENDING` -> `PREPARING_DATA`) |
+| `b37b785` | — | `scripts/demo_submission.sh` (offline/cached demo + HTTP API) |
+| `51ff231` | `serve --with-worker` on a fresh state directory: `database is locked` when two connections initialised SQLite at once | busy timeout, bounded init retry, conditional WAL/user_version writes, API service opened before the worker |
+| `441bb64` | a prefetch parent showed 62 "attempts" while only polling its child | polls of a waiting child are not attempts |
+
+Live observations (UTC, evidence `.heimdall/verification/2026-11-15-submission/`):
+
+- 07:52: `irsa-status`: TAP timeout (45.8 s), SIA2 OK (1.2 s), product cutout OK (3.95 MB FITS, 15.7 s), calibration OK.
+- 07:53:30: coordinate request (RA 150.1, Dec 2.2, VARIABLE_STAR, 8 observations) accepted immediately as
+  `job:target_investigation:c03487f9482a` (`coord_submit.json`, exit 0, `must_resubmit: false`).
+- 08:05:54: after the catalogue outage the job moved to `PREPARING_DATA` with `CATALOGUE_PENDING` ("reference astrometry not yet
+  available (SERVICE_FAILED: request to gea.esac.esa.int timed out)"); never recorded as "no match".
+- 08:06:01: worker 1 (pid 89947) killed with SIGKILL mid-job (crash drill); worker 2 started 08:06:22; the in-flight INDEX job of the
+  prefetch `job:prefetch:e00cff225e3a` keeps its lease until expiry and is then resumed by `resume()` (lease-based recovery).
+- 08:14:11: worker 2 stopped with SIGTERM: `stopped_gracefully: true`, final heartbeat `stopped: true`; worker 3 (pid 92286) started.
+- Offline HTTP smoke on the real state: `POST /investigations {"target_id":"NASA-01"}` -> 200 in 22 ms with
+  `served_from: verified local data (no archive request)`, manifest `man:e8ea091b52f6041c`; `GET /coverage` (NASA-01 field) -> 368
+  indexed observations (243 DR1, 125 QR3) from the local index as of 06:27:38Z.
+
 ## Deferred (explicitly out of today's scope; see `docs/BACKEND_MASTER_SPEC.md` for entry points)
 
 All-sky metadata crawl and mirror (spec §8–9), new ML models (§16), per-detector fidelity campaign (§11), first-class comparison records
@@ -73,4 +98,4 @@ All-sky metadata crawl and mirror (spec §8–9), new ML models (§16), per-dete
 
 ## Active jobs / workers
 
-Worker pid 89947 (`python3 -m heimdall data worker --max-idle 10`, started 07:53Z; stop with `kill -TERM 89947`). Job `job:target_investigation:c03487f9482a`. Inspect safely: `python3 -m heimdall data jobs`, `python3 -m heimdall data status` (read-only).
+Worker pid 92286 (`python3 -m heimdall data worker --max-idle 10`, started 08:14Z; stop gracefully with `kill -TERM 92286`). Open jobs: `job:target_investigation:c03487f9482a`, `job:prefetch:e00cff225e3a`. Inspect safely: `python3 -m heimdall data jobs`, `python3 -m heimdall data status` (read-only).
