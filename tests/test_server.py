@@ -238,3 +238,19 @@ class ScientistApiTests(ApiTests):
         self.assertEqual(self.call("GET", "/api/v1/evidence/lookup", {"sha256": ["ab" * 32]})[1]["products"][0]["obs_id"], "OBS_A")
         for bad in ({"obs_id": ["../x"]}, {"sha256": ["zz"]}, {}):
             self.assertEqual(self.err("GET", "/api/v1/evidence/lookup", bad).status, 400)
+
+
+class ReportApiTests(ScientistApiTests):
+    def test_portable_report_identifies_data_methods_validation_and_limitations(self):
+        self._save("NASA-01", "0000aaaa")
+        d = Path(self.engine.settings.state_dir) / "targets" / "NASA-01"
+        (d / "latest.json").write_text((d / "0000aaaa.json").read_text())
+        rep = self.call("GET", "/api/v1/targets/NASA-01/report", {"format": ["json"]})[1]
+        self.assertEqual(rep["schema"], "heimdall.report/1.0")
+        self.assertEqual(rep["data"]["products"][0]["sha256"], "ab" * 32)
+        self.assertIn("no method behind these claims is validated", rep["validation"]["statement"])
+        self.assertEqual(rep["versions"][0]["investigation_id"], "tinv:NASA-01:0000aaaa")
+        md = self.call("GET", "/api/v1/targets/NASA-01/report", {"format": ["md"]})[1]["markdown"]
+        self.assertIn("## Claims", md)
+        self.assertIn("## Limitations", md)
+        self.assertEqual(self.err("GET", "/api/v1/targets/NASA-01/report", {"format": ["pdf"]}).status, 400)

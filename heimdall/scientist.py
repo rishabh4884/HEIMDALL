@@ -52,6 +52,7 @@ def capabilities(engine) -> dict:
              "output": "parameter/input/method differences, conclusion changes, comparability verdict"},
             {"id": "evidence_lookup", "entry": "GET /api/v1/evidence/lookup?obs_id=|sha256=", "output": "every dependent version, claim, manifest, run"},
             {"id": "versions", "entry": "GET /api/v1/targets/{id}/versions", "output": "immutable versions with supersession links"},
+            {"id": "report", "entry": "GET /api/v1/targets/{id}/report?format=json|md; CLI target report", "output": "portable report with data, methods, validation, claims, limitations, versions"},
             {"id": "patterns", "entry": "GET /api/v1/targets/{id}/patterns", "output": "motion/temporal/spectral/spatial records, links, missing dimensions"},
             {"id": "followup", "entry": "GET /api/v1/targets/{id}/followup; POST /api/v1/followup/{action_id}/run",
              "output": "discriminating actions with hypotheses distinguished, cost, availability, budget and stopping reason; never repeated"},

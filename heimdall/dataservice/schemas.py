@@ -125,6 +125,7 @@ class ServiceConfig:
     corrupt_retries: int = 2                  # re-download attempts for a corrupt/mismatching product before quarantine
     quota_bytes: int | None = None            # soft quota for the product store; None = unlimited
     index_max_age_s: float = 7 * 86400.0      # older syncs still answer, but trigger a background refresh
+    max_open_jobs: int = 5000                 # bounded queue: new work beyond this is refused with QUEUE_FULL (existing jobs are still joined)
     discovery_maxrec: int = 20000             # explicit SIA2 MAXREC per collection; an answer reaching it is truncated and never certifies coverage
     recovery_window_s: float = 7 * 86400.0    # after a deadline, the service keeps re-checking the request for this long (0 disables)
     recovery_interval_s: float = 6 * 3600.0   # low-frequency recovery check interval
@@ -141,6 +142,7 @@ class ServiceConfig:
                    quota_bytes=int(q) if q else None, index_max_age_s=_env_float(e, "HEIMDALL_DS_INDEX_MAX_AGE_S", cls.index_max_age_s),
                    recovery_window_s=_env_float(e, "HEIMDALL_DS_RECOVERY_WINDOW_S", cls.recovery_window_s),
                    discovery_maxrec=int(_env_float(e, "HEIMDALL_DS_DISCOVERY_MAXREC", cls.discovery_maxrec)),
+                   max_open_jobs=int(_env_float(e, "HEIMDALL_DS_MAX_OPEN_JOBS", cls.max_open_jobs)),
                    recovery_interval_s=_env_float(e, "HEIMDALL_DS_RECOVERY_INTERVAL_S", cls.recovery_interval_s),
                    recovery_attempt_s=_env_float(e, "HEIMDALL_DS_RECOVERY_ATTEMPT_S", cls.recovery_attempt_s))
 

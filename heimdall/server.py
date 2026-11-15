@@ -9,6 +9,7 @@ Endpoints (prefix ``/api/v1``):
   GET  /health                         software/schema versions, offline flag, worker heartbeat
   GET  /status                         data-service metrics and index freshness
   GET  /capabilities                   versioned capability contract (analyses, prerequisites, limits, validation state)
+  GET  /targets/{target_id}/report?format=json|md   portable report: data, methods, validation, claims, patterns, limitations, versions
   GET  /targets/{target_id}/patterns   motion/temporal/spectral/spatial pattern record with links, dependency groups and missing dimensions
   GET  /targets/{target_id}/followup   discriminating follow-up actions (bounded, persisted, never repeated); POST /followup/{action_id}/run
   GET  /inventory/partitions[?tile_deg=&domain=&offset=&limit=]  all-sky partition states and coverage accounting (read-only)
@@ -209,6 +210,13 @@ class Api:
                 if not (self.targets_dir / tid / "latest.json").is_file():
                     raise ApiError(404, "NOT_FOUND", f"no saved investigation for {tid}")
                 return 200, plan(self.engine, tid, budget_products=int(_num(query, "budget_products", 0, 256, 32)))
+            if len(p) == 3 and p[2] == "report":
+                from .report import build_report, render_markdown
+                rep = build_report(self._read_json(self.targets_dir / tid / "latest.json", f"no saved investigation for {tid}"), self.versions(tid)["versions"])
+                fmt = query.get("format", ["json"])[0]
+                if fmt not in ("json", "md"):
+                    raise ApiError(400, "INPUT_INVALID", "format must be json or md")
+                return 200, rep if fmt == "json" else {"schema": rep["schema"], "format": "markdown", "markdown": render_markdown(rep)}
             if len(p) == 3 and p[2] == "patterns":
                 from .patterns import build_patterns
                 return 200, build_patterns(self._read_json(self.targets_dir / tid / "latest.json", f"no saved investigation for {tid}"))
@@ -460,7 +468,9 @@ def make_handler(api: Api, token: str | None, cors_origin: str | None):
                 code = getattr(getattr(e, "code", None), "value", "ERROR")
                 status = {"INPUT_INVALID": 400, "AUTHENTICATION_FAILED": 502, "ACCESS_DENIED": 502, "ARCHIVE_UNREACHABLE": 503,
                           "ARCHIVE_TIMEOUT": 503, "RETRIEVAL_FAILED": 503}.get(code, 500)
-                detail = {k: str(v) for k, v in dict(e.info.detail).items() if k in ("classification", "http_status", "routes", "host", "offline")}
+                if dict(e.info.detail).get("reason") == "QUEUE_FULL":
+                    status, code = 429, "QUEUE_FULL"
+                detail = {k: str(v) for k, v in dict(e.info.detail).items() if k in ("classification", "http_status", "routes", "host", "offline", "open_jobs")}
                 self._send(status, {"schema": HTTP_SCHEMA, "error": {"code": code, "message": e.info.message, "detail": detail,
                                                                       "category": "UPSTREAM_OUTAGE" if status == 503 else "ERROR"}})
             except ValueError as e:

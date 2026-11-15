@@ -316,6 +316,24 @@ instead of being analysed. Full suite: 535 OK (5 live skipped).
   worker pid 7250) takes the narrowed path. It then needs an index of its field, which waits for IRSA discovery (SIA2/TAP 502 at 10:24Z).
 - Tests: full suite 552 OK (5 live skipped).
 
+### R2-M5 — portable report and worker safety (this commit)
+
+- **`heimdall/report.py`** (`heimdall.report/1.0`): JSON plus Markdown with data (SHA-256 per product, manifest), methods and versions,
+  validation statement, claims with gates, patterns, hypotheses, limitations, versions and reproduction. A SUPPORTED hypothesis is
+  qualified by its unexcluded alternatives. Served by API `GET /targets/{id}/report` and CLI `target report X --write F.md`. Real report:
+  `.heimdall/verification/2026-11-15-submission/report_NASA-02.{md,json}`.
+- **Stale-worker fencing:** the attempt counter is the token; a re-claimed job refuses the late worker's publication (`StaleClaim`).
+- **Single-worker lock:** a second worker on the real state was refused with a clear message.
+- **Bounded queue:** `QUEUE_FULL` (429), while identical requests still join.
+- Tests: full suite 562 OK (5 live skipped); new `WorkerSafetyTests` (3) and `ReportApiTests`.
+- Worker 10 (pid 7948) runs this code.
+- **Moving-object recovery (spec §7): investigated, not changed.** The saved 100-body injection runs (56/100 and 59/100 recovered; 30 and
+  27 bodies with no track) keep aggregate per-body outcomes, not per-stage counters. Any linker change also needs a fresh 100-experiment
+  validation (about 2–3 h per run here) to show recall does not rise at the cost of false links, which does not fit today. Next action:
+  add per-body stage counters (detections near truth per epoch → associated → tracklet → linked) to `validation.moving_object_*`, rerun
+  `python3 -m heimdall validate <run>` on the cached QR2 field with seed 20261029, attribute the losses, then change the responsible
+  stage with positive and negative regression cases.
+
 ## Integration record (D-007; approved by the owner on 2026-11-15)
 
 The full individual commit history is kept; nothing is squashed. Steps and verification:

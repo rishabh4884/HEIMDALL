@@ -18,7 +18,7 @@ from ..contracts import ErrorCode, HeimdallError, ResultOutcome
 from ..data_access.interface import DataSource, DiscoveryQuery, RetrievalRequest, SkyRegion
 from .db import ServiceDB
 from .inventory import Inventory, ObsRecord, now_iso
-from .jobs import JobQueue, parse_ts
+from .jobs import JobQueue, StaleClaim, parse_ts
 from .productstore import InvalidProduct, ProductStore
 from .schemas import (CURRENT_COLLECTIONS, JOB_TO_READINESS, SCOPE_CURRENT, SCOPE_SYNTHETIC, STATUS_SCHEMA, TERMINAL, USER_MESSAGES, JobState, PlanItem,
                       ProductPlan, Readiness, RegionSpec, ServiceConfig, calibration_key, canonical, digest)
@@ -354,6 +354,14 @@ class DataService:
         import os
         if self.offline:
             raise HeimdallError.of(ErrorCode.CONFIG_INVALID, "the data worker cannot run with HEIMDALL_OFFLINE set")
+        import fcntl
+        lock_fh = open(self.db.path.parent / "worker.lock", "a+")  # noqa: SIM115 - held for the worker's lifetime
+        try:
+            fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)  # supported model: one worker per state directory (SQLite, single node)
+        except OSError:
+            lock_fh.close()
+            raise HeimdallError.of(ErrorCode.CONFIG_INVALID, "another data worker already runs on this state directory (one worker per state directory)",
+                                   lock=str(self.db.path.parent / "worker.lock")) from None
         import threading
         state = {"started_at": now_iso(self.clock()), "ticks": 0, "jobs_run": 0, "open_jobs": None, "busy": False}
         lock = threading.Lock()
@@ -381,6 +389,7 @@ class DataService:
         finally:
             done.set()
             beat(stopped=True)
+            lock_fh.close()  # releases the worker lock
         return {"ticks": state["ticks"], "jobs_run": state["jobs_run"], "resumed": resumed, "stopped_gracefully": True}
 
     def run_job(self, job_id: str, budget_s: float | None = None) -> dict:
@@ -396,10 +405,16 @@ class DataService:
             self.jobs.record_attempt(job_id)
         job = self.jobs.get(job_id)
         self._in_worker = True
+        self.jobs.fence[job_id] = job["attempts"]  # fencing token: publishing fails if another worker re-claims the job meanwhile
         try:
             return self._dispatch(job, budget_s)
+        except StaleClaim as exc:
+            import sys
+            print(f"[worker] {exc}", file=sys.stderr)
+            return self.jobs.get(job_id) or {}
         finally:
             self._in_worker = False
+            self.jobs.fence.pop(job_id, None)
 
     def _dispatch(self, job: dict, budget_s: float | None) -> dict:
         job_id = job["job_id"]

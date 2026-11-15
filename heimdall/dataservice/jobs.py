@@ -15,6 +15,10 @@ class IllegalTransition(Exception):
     pass
 
 
+class StaleClaim(Exception):
+    """A worker tried to publish for a job that another worker has re-claimed since (its lease expired): the result is discarded."""
+
+
 def parse_ts(s: str | None) -> datetime | None:
     return datetime.fromisoformat(s) if s else None
 
@@ -29,6 +33,7 @@ class JobQueue:
     def __init__(self, db: ServiceDB, cfg: ServiceConfig, clock=lambda: datetime.now(UTC), rng: random.Random | None = None) -> None:
         self.db, self.cfg, self.clock = db, cfg, clock
         self.rng = rng or random.Random()
+        self.fence: dict[str, int] = {}  # job_id -> attempts value at claim time (fencing token for this process's running job)
 
     # -- submission -------------------------------------------------------------------------------
     @staticmethod
@@ -46,6 +51,12 @@ class JobQueue:
         now = self.clock()
         with self.db.transaction() as db:
             row = db.conn.execute("SELECT * FROM jobs WHERE job_id=?", (jid,)).fetchone()
+            if row is None and self.cfg.max_open_jobs:
+                n_open = db.conn.execute(f"SELECT COUNT(*) FROM jobs WHERE state NOT IN ({','.join('?' * len(TERMINAL))})", tuple(str(x) for x in TERMINAL)).fetchone()[0]
+                if n_open >= self.cfg.max_open_jobs:
+                    from ..contracts import ErrorCode, HeimdallError
+                    raise HeimdallError.of(ErrorCode.INPUT_INVALID, f"the job queue is full ({n_open} open jobs); retry later or cancel unneeded jobs",
+                                           reason="QUEUE_FULL", open_jobs=str(n_open))
             if row is None:
                 db.conn.execute("INSERT INTO jobs(job_id,kind,payload,state,generation,created_at,updated_at,deadline_at,attempts,progress) VALUES(?,?,?,?,?,?,?,?,0,?)",
                                 (jid, kind, canonical(payload), JobState.QUEUED, 1, now_iso(now), now_iso(now),
@@ -123,9 +134,11 @@ class JobQueue:
                    next_attempt_at: datetime | None = None, result: dict | None = None, progress: dict | None = None, lease: bool = False) -> dict:
         now = self.clock()
         with self.db.transaction() as db:
-            row = db.conn.execute("SELECT state FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+            row = db.conn.execute("SELECT state, attempts FROM jobs WHERE job_id=?", (job_id,)).fetchone()
             if row is None:
                 raise KeyError(job_id)
+            if job_id in self.fence and row["attempts"] != self.fence[job_id]:
+                raise StaleClaim(f"{job_id} was re-claimed (attempt {row['attempts']} != {self.fence[job_id]}); this worker's result is discarded")
             cur = JobState(row["state"])
             if cur != to and to not in TRANSITIONS[cur]:
                 raise IllegalTransition(f"{cur} -> {to} is not allowed")

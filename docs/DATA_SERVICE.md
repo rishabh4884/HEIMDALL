@@ -193,3 +193,12 @@ Reference astrometry and the Gaia field catalogue are retried by the job, with o
 
 The job result and data status carry `degraded_context`. A degraded result is never reused once the catalogue is back.
 `python3 -m heimdall context-status` probes Gaia (IRSA, ESA), CatWISE and JPL once each and classifies failures from evidence.
+
+## Worker safety and queue bounds (2026-11-15)
+
+- **One worker per state directory.** `data worker` and `serve --with-worker` take an exclusive lock
+  (`<state>/dataservice/worker.lock`); a second worker refuses to start.
+- **Stale-worker fencing.** A job's attempt counter is its fencing token. If a worker's lease expired and another worker re-claimed the
+  job, the late worker's state changes raise `StaleClaim` and are discarded, so they cannot overwrite the newer result.
+- **Bounded queue.** At most `HEIMDALL_DS_MAX_OPEN_JOBS` (default 5000) open jobs. New work beyond that is refused with `QUEUE_FULL`
+  (HTTP 429); an identical request still joins its existing job.

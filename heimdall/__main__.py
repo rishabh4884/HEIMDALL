@@ -135,7 +135,7 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--no-svg", action="store_true")
     s.add_argument("--quiet", action="store_true")
     s = sub.add_parser("target", help="named (NASA-01..05) or coordinate-addressable target investigations")
-    s.add_argument("action", choices=["list", "resolve", "run", "show", "matrix", "reevaluate", "claims", "followup", "followup-run"])
+    s.add_argument("action", choices=["list", "resolve", "run", "show", "matrix", "reevaluate", "claims", "followup", "followup-run", "report"])
     s.add_argument("target", nargs="?", help="NASA-01..NASA-05 or a name fragment")
     s.add_argument("--ra", type=float)
     s.add_argument("--dec", type=float)
@@ -483,6 +483,17 @@ def _target(engine, args) -> int:
         return 0
     if args.action == "show":
         _print(engine.target_result(args.target), True)
+        return 0
+    if args.action == "report":  # portable report (JSON + Markdown) from the saved result; --write <path.md> also writes <path>.json
+        from .report import build_report, render_markdown, to_json
+        from .server import Api
+        rep = build_report(engine.target_result(args.target), Api(engine).versions(args.target)["versions"])
+        if args.write:
+            args.write.write_text(render_markdown(rep), encoding="utf-8")
+            args.write.with_suffix(".json").write_text(to_json(rep), encoding="utf-8")
+            print(f"written {args.write} and {args.write.with_suffix('.json')}")
+        else:
+            print(render_markdown(rep))
         return 0
     if args.action == "followup":  # discriminating follow-up plan (persisted; actions never repeated)
         from .followup import plan

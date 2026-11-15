@@ -1122,3 +1122,52 @@ class MirrorPlanTests(Base):
         self.assertEqual(plan["products_to_fetch"], 5)
         self.assertTrue(plan["feasible"])
         self.assertFalse(mirror_plan(s, dom, max_bytes=10)["feasible"])  # over budget
+
+
+class WorkerSafetyTests(Base):
+    def test_a_stale_worker_cannot_publish_after_its_job_was_reclaimed(self):
+        from heimdall.dataservice.jobs import StaleClaim
+        a = self.svc()
+        st = a.ensure_index(REGION)
+        jid = st["job"]["job_id"]
+        a.jobs.record_attempt(jid)
+        a.jobs.fence[jid] = a.jobs.get(jid)["attempts"]  # worker A claims the job ...
+        a.jobs.transition(jid, JobState.DISCOVERING, reason="worker A", lease=True)
+        b = DataService(self.tmp / "svc", self.archive, self.cfg, clock=self.clock)  # ... its lease expires and worker B re-runs it
+        self.services.append(b)
+        self.clock.advance(120)
+        b.run_job(jid)
+        self.assertEqual(b.jobs.get(jid)["state"], JobState.COMPLETE)
+        with self.assertRaises(StaleClaim):  # A's late publication is refused; B's completed result stands
+            a.jobs.transition(jid, JobState.PREPARING_DATA, reason="worker A late failure")
+        self.assertEqual(a.jobs.get(jid)["state"], JobState.COMPLETE)
+
+    def test_only_one_worker_per_state_directory(self):
+        import threading
+        a = self.svc()
+        stop = threading.Event()
+        t = threading.Thread(target=lambda: a.serve(stop, max_idle_s=0.05))
+        t.start()
+        try:
+            for _ in range(100):
+                if a.heartbeat_path.exists():
+                    break
+                threading.Event().wait(0.02)
+            b = DataService(self.tmp / "svc", self.archive, self.cfg, clock=self.clock)
+            self.services.append(b)
+            with self.assertRaises(HeimdallError) as cm:
+                b.serve(threading.Event(), max_ticks=1)
+            self.assertIn("another data worker", cm.exception.info.message)
+        finally:
+            stop.set()
+            t.join(5)
+
+    def test_bounded_queue_refuses_new_work_but_joins_existing(self):
+        cfg = ServiceConfig(max_open_jobs=2)
+        s = self.svc(config=cfg)
+        a, _ = s.jobs.submit("K", {"a": 1})
+        s.jobs.submit("K", {"b": 1})
+        with self.assertRaises(HeimdallError) as cm:
+            s.jobs.submit("K", {"c": 1})
+        self.assertEqual(cm.exception.info.detail["reason"], "QUEUE_FULL")
+        self.assertEqual(s.jobs.submit("K", {"a": 1})[0]["job_id"], a["job_id"])  # an identical request still joins its job

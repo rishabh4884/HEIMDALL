@@ -27,6 +27,7 @@ is given. Implementation: `heimdall/server.py` (stdlib only); tests: `tests/test
 | `GET /targets/{id}/patterns` | `heimdall.patterns/1.0`: motion / temporal / spectral / spatial records with links, dependency groups, guards, and `missing` dimensions | show missing dimensions explicitly |
 | `GET /targets/{id}/followup`, `POST /followup/{action_id}/run` | `heimdall.followup/1.0`: discriminating actions (hypotheses distinguished, predictions, cost, availability, expected value), budget, `next_action`, `stopping_reason`; run -> 202 job | an action never runs twice; over-budget runs are refused |
 | `GET /inventory/partitions?tile_deg=&domain=` | all-sky partition states and accounting (metadata vs downloaded vs used coverage; `all_sky_complete` rule) | read-only |
+| `GET /targets/{id}/report?format=json\|md` | `heimdall.report/1.0`: data (products with SHA-256, manifest), methods and versions, validation state, claims with gates, patterns, hypotheses (SUPPORTED qualified by unexcluded alternatives), limitations, versions, reproduction | export / print view |
 | `GET /health` | versions, `offline`, `worker {running, heartbeat_age_s, heartbeat}` | show a banner when no worker is running: jobs will not progress |
 | `GET /status` | `metrics` (queue, routes, cache, bytes, worker) + `freshness` | operator panel; `freshness.all_sky_complete` is always `false` |
 | `GET /targets` | five NASA targets + saved-result summary | |
@@ -45,7 +46,7 @@ is given. Implementation: `heimdall/server.py` (stdlib only); tests: `tests/test
 | `GET /manifests/{man:...}` | frozen input manifest (products, SHA-256, release, route, retrieval time, index sync) | |
 
 Errors: `{"schema":"heimdall.http/1.0","error":{"code","message"}}`, codes `INPUT_INVALID` (400), `UNAUTHORIZED` (401), `NOT_FOUND` (404),
-`PAYLOAD_TOO_LARGE` (413), `INTERNAL` (500, no stack trace to the client). Requests never return an archive error: an outage shows up
+`PAYLOAD_TOO_LARGE` (413), `QUEUE_FULL` (429: the bounded job queue is full; existing identical requests still join their job), outages (503, `category: UPSTREAM_OUTAGE`), `INTERNAL` (500, no stack trace to the client). Requests never return an archive error: an outage shows up
 as `PREPARING` with `job.next_attempt_at`.
 
 ## Executable example
