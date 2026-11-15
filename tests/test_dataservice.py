@@ -798,3 +798,19 @@ class ConcurrentOpenTests(unittest.TestCase):
                 d.conn.close()
             shutil.rmtree(tmp, ignore_errors=True)
 
+
+class ParentPollTests(Base):
+    def test_polling_a_child_is_not_counted_as_a_parent_attempt(self):
+        self.archive.mode = "down"
+        s = self.svc()
+        st = s.prefetch(REGION, cutout_size_deg=0.1, max_observations=2)
+        jid = st["job"]["job_id"]
+        for _ in range(15):
+            s.tick()
+            self.clock.advance(5)
+        parent = s.jobs.get(jid)
+        self.assertEqual(parent["state"], JobState.PREPARING_DATA)
+        self.assertLessEqual(parent["attempts"], 1)
+        child = s.jobs.list(kind=KIND_INDEX)[0]
+        self.assertGreaterEqual(child["attempts"], 1)  # the child's real archive attempts are still counted
+

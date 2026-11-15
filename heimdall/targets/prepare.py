@@ -192,7 +192,7 @@ def make_handler(*, settings, config, registry, store):
             step = advance(service, spec, opts, settings=settings, config=config, registry=registry, store=store, online=True)
         except Exception as exc:  # noqa: BLE001 - an unexpected software error must end in a recorded state, not a crash loop
             return service.jobs.schedule_retry(service.jobs.get(jid), error={"code": "UNEXPECTED", "message": f"{type(exc).__name__}: {exc}"},
-                                               reason="unexpected error while preparing; retrying automatically")
+                                               reason="unexpected error while preparing; retrying automatically", progress={"waiting_on": "retry"})
         state = step["state"]
         if state == "DONE":
             res = step["result"]
@@ -201,7 +201,7 @@ def make_handler(*, settings, config, registry, store):
                                                    "manifest_id": (step.get("manifest") or {}).get("manifest_id"), "status": res.get("status")})
         if state == "WAIT" and step.get("waiting_on") in ("catalogue", "field_catalogue"):
             return service.jobs.schedule_retry(service.jobs.get(jid), error={"code": "CATALOGUE_PENDING", "message": step["detail"]},
-                                               reason=f"{step['detail']}; retrying automatically")
+                                               reason=f"{step['detail']}; retrying automatically", progress={"waiting_on": step["waiting_on"]})
         return service._apply_step(jid, step)
     return handler
 

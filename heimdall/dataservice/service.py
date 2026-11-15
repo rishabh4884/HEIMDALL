@@ -378,7 +378,10 @@ class DataService:
         if self.jobs.expired(job):
             return self.jobs.transition(job_id, JobState.UNAVAILABLE_AFTER_DEADLINE, reason="deadline reached before the data could be acquired",
                                         detail={"attempts": job["attempts"]})
-        self.jobs.record_attempt(job_id)
+        # A parent re-checking a child it waits on is a poll, not an attempt: counting it would inflate the attempt number shown to users
+        # and the parent's own retry backoff.
+        if not (job["state"] is JobState.PREPARING_DATA and (job["progress"] or {}).get("child_job")):
+            self.jobs.record_attempt(job_id)
         job = self.jobs.get(job_id)
         if job["kind"] == KIND_INDEX:
             return self._run_index(job)
