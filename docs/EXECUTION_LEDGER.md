@@ -22,7 +22,7 @@ requirement IDs, deferrals). The requirement-to-code-to-test-to-evidence matrix 
 | M2 | Stdlib HTTP JSON transport over `Engine` (status, targets, submit/reconnect, results, jobs, cancel, coverage from the local index) with bounded inputs | Frontend integration tonight needs a transport; none existed | done, pushed `91ee79d` |
 | M3 | Live/cached verification of the end-to-end path through the service (one real workflow; offline repeat) | DoD 3/4 | done for the data path (crash + 502 survived, 4 real products, offline repeat); new real *measurement* blocked by the Gaia outage (last real measurement: NASA-01 06:20Z) |
 | M4 | NASA target records: honesty review of saved JSON, regenerate matrix from saved JSON only, acceptance doc | DoD 5/6 | done, pushed `05940e6` |
-| M5 | Full suite, diff review, handoff (`docs/FRONTEND_HANDOFF.md`), push | DoD 8/9 | planned |
+| M5 | Full suite, diff review, handoff (`docs/FRONTEND_HANDOFF.md`), push | DoD 8/9 | done (see below) |
 
 ## Milestones
 
@@ -96,6 +96,40 @@ Live observations (UTC, evidence `.heimdall/verification/2026-11-15-submission/`
   `served_from: verified local data (no archive request)`, manifest `man:e8ea091b52f6041c`; `GET /coverage` (NASA-01 field) -> 368
   indexed observations (243 DR1, 125 QR3) from the local index as of 06:27:38Z.
 
+### M5 — review, hardening, handoff
+
+- Code review of `462c8b4..HEAD` found 10 issues. 8 are fixed in `a808f33`:
+  - a negative `Content-Length` bypassed the body limit;
+  - internal re-submissions and coverage browsing reset a sub-job's recovery window;
+  - cancel could not stop automatic recovery;
+  - a stale child-wait progress froze retry backoff;
+  - coverage created one job per float coordinate (now snapped to a 0.01° grid);
+  - the RA `% 360` edge case;
+  - a non-constant-time token comparison;
+  - corrupt records were reported as 400.
+- Also in `a808f33`: re-evaluation now updates `latest_attempt.json` when it pointed at the superseded version.
+- Recorded rather than fixed (no correctness risk for the demo):
+  - the worker loop re-reads the jobs table about 5 times per wake; this is O(history) and needs SQL filters plus pruning of
+    terminal jobs;
+  - a completed target job's `result.investigation_id` keeps naming the version that job produced, even after a later
+    re-evaluation (`GET /targets/{id}/versions` shows the link).
+- Added `GET /targets/{id}/versions` (`02d0a4f`) and `scripts/demo_submission.sh` (`b37b785`). The final full suite gave 498 OK
+  (5 live tests skipped).
+- Commits on `backend/submission-2026-11-15`, all pushed:
+  - `c4a4751` M1
+  - `91ee79d` M2
+  - `05940e6` M4
+  - `1c0e47d` catalogue single attempt
+  - `b37b785` demo script
+  - `51ff231` concurrent DB open
+  - `441bb64` polls are not attempts
+  - `93f8b85` ledger
+  - `02d0a4f` versions endpoint
+  - `28db40c` verification
+  - `a808f33` review fixes
+  - plus this ledger commit
+- No CI exists in the repository. `main` is unchanged at `462c8b4`.
+
 ## Deferred (explicitly out of today's scope; see `docs/BACKEND_MASTER_SPEC.md` for entry points)
 
 All-sky metadata crawl and mirror (spec §8–9), new ML models (§16), per-detector fidelity campaign (§11), first-class comparison records
@@ -103,4 +137,8 @@ All-sky metadata crawl and mirror (spec §8–9), new ML models (§16), per-dete
 
 ## Active jobs / workers
 
-Worker pid 92286 (`python3 -m heimdall data worker --max-idle 10`, started 08:14Z; stop gracefully with `kill -TERM 92286`). Open jobs: `job:target_investigation:c03487f9482a`, `job:prefetch:e00cff225e3a`. Inspect safely: `python3 -m heimdall data jobs`, `python3 -m heimdall data status` (read-only).
+- Worker pid 94815 (`python3 -m heimdall data worker --max-idle 10`), started 08:34Z on the reviewed code. Stop it gracefully with
+  `kill -TERM 94815`. Open jobs survive a stop and continue when any worker starts.
+- Open job `job:target_investigation:c03487f9482a` (coordinate RA 150.1, Dec 2.2) is `PREPARING_DATA` / `CATALOGUE_PENDING`: Gaia is
+  unreachable at IRSA and ESA. Its deadline is 13:53:30Z; after that it is re-checked every 6 h for 7 days.
+- Inspect read-only with `python3 -m heimdall data jobs` and `python3 -m heimdall data status`.
