@@ -931,3 +931,47 @@ class SoftwareErrorTests(Base):
         again, created = s.jobs.submit("CUSTOM", {"x": 2})  # a new request after the fix revives it
         self.assertTrue(created)
         self.assertEqual(again["state"], JobState.QUEUED)
+
+
+class CancelAndRejectionTests(Base):
+    def test_cancelling_a_parent_cancels_its_unshared_child_only(self):
+        s = self.svc()
+        child, _ = s.jobs.submit(KIND_INDEX, {"region": REGION.to_dict(), "scope": "current"})
+        a, _ = s.jobs.submit("PARENT", {"a": 1})
+        b, _ = s.jobs.submit("PARENT", {"b": 1})
+        for p in (a, b):
+            s.jobs.transition(p["job_id"], JobState.PREPARING_DATA, reason="waiting", progress={"child_job": child["job_id"]})
+        s.jobs.cancel(a["job_id"])
+        self.assertNotEqual(s.jobs.get(child["job_id"])["state"], JobState.CANCELLED)  # b still waits on it
+        s.jobs.cancel(b["job_id"])
+        c = s.jobs.get(child["job_id"])
+        self.assertEqual(c["state"], JobState.CANCELLED)
+        self.assertIn("cancelled with its parent", c["reason"])
+
+    def test_a_repeated_archive_rejection_excludes_the_product_instead_of_retrying_it(self):
+        s = self.svc()
+        real_retrieve = self.archive.retrieve
+        bad = self.archive.rows[0]["observationid"] + "D2"  # the adapter appends the detector to the observation id
+
+        def retrieve(request):
+            if request.obs_id == bad:
+                raise HeimdallError.of(ErrorCode.RETRIEVAL_FAILED, "irsa returned HTTP 422", http_status="422")
+            return real_retrieve(request)
+        self.archive.retrieve = retrieve
+        s.ensure_index(REGION)
+        self.work(s)
+        obs = s.observations(REGION)
+        plan = plan_for(obs, REGION, 0.1, 3)
+        self.assertIn(bad, [i.obs_id for i in plan.items])
+        st = s.ensure_products(plan, region=REGION)
+        jid = st["job"]["job_id"]
+        for _ in range(10):
+            s.tick()
+            self.clock.advance(200)
+        j = s.jobs.get(jid)
+        self.assertEqual(j["state"], JobState.COMPLETE)
+        rej = [k for k, v in j["progress"]["items"].items() if v.get("kind") == "ARCHIVE_REJECTED"]
+        self.assertEqual(len(rej), 1)
+        self.assertIn("HTTP 422", j["progress"]["items"][rej[0]]["reason"])
+        man = s.ensure_products(plan, region=REGION)
+        self.assertEqual(man["readiness"], "READY")  # the manifest excludes the rejected product and lists it

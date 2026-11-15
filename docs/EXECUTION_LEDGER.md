@@ -217,6 +217,16 @@ Live observations (UTC, evidence `.heimdall/verification/2026-11-15-submission/`
 - `scripts/demo_submission.sh` shows claims, local-index coverage and field-run reuse.
 - Tests: full suite (see commit message).
 
+### Final verification — cancellation, archive rejections, side-effect-free demo (this commit)
+
+- Found by the final demo run against the live state: see `docs/VERIFICATION_REAL_DATA.md`, "Unintended real acquisition, recorded".
+- Fixes:
+  - `JobQueue.cancel` propagates to the child the parent waits on unless another open job shares it;
+  - a product rejected twice with a permanent 4xx is excluded (`ARCHIVE_REJECTED`) rather than retried into the deadline;
+  - the demo sends its uncached example to a throwaway state directory with no worker. Verified: 15 real-state jobs before and after
+    the demo.
+- Tests: full suite 524 OK (5 live skipped); new `CancelAndRejectionTests`.
+
 ## Integration plan (D-007, revised; pending, not executed)
 
 No squash. No rewrite, force-push or merge until the owner explicitly approves the verified plan.

@@ -46,6 +46,13 @@ Everything below was observed on the real archive through the service. None of i
   - Worker 5 completed it from manifest `man:d32d96d3e47d157d` as run `R20261115T085933-1cb9d31a`.
   - Resubmitting returned the stored run with 200 in 10.5 ms (`reused: true`).
   - Its `results_hash` (`sha256:511dc7e3...`) is identical to the CLI run's, from a separate process on the same frozen inputs.
+- **Unintended real acquisition, recorded.** At 09:00Z the demo script's "uncached coordinate" request (RA 10, Dec −5) was picked up by
+  the running worker in the milliseconds before the script cancelled it. Cancellation did not then propagate to child jobs, so
+  `job:acquire:f9e0ed215590` acquired and verified 21 real products: 15 DR1/QR3 cutouts over all detectors, plus the ePSFs for
+  detectors 1–6. One cutout (`2025W26_2A_0278_2D4`) was answered with **HTTP 422** and was retried as if it were an outage.
+  - Both defects are now fixed: cancellation propagates to unshared children, and a repeated permanent 4xx excludes the product.
+  - The demo now sends its uncached example to a throwaway state directory.
+  - No analysis was run on these products.
 - **Last real measurement through the service.** NASA-01 at about 06:20 today: `tinv:NASA-01:fd9680e5`, manifest
   `man:e8ea091b52f6041c`, 10 products, 7 images processed, `LIMITED_BY_DATA`: every processed image is saturation-flagged and its forced flux is `UNUSABLE` (masked fraction above the limit), so no usable flux or centroid was obtained. It is
   described in the next section.

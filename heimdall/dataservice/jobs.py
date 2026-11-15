@@ -232,15 +232,30 @@ class JobQueue:
             return not (self.recovery_info(job) or {}).get("active", False)
         return False
 
-    def cancel(self, job_id: str) -> dict:
+    def cancel(self, job_id: str, *, reason: str = "cancelled by request") -> dict:
         j = self.get(job_id)
         if j is None:
             return j  # type: ignore[return-value]
         if j["state"] is JobState.UNAVAILABLE_AFTER_DEADLINE:  # cancelling also ends the automatic recovery policy
-            return self.transition(job_id, JobState.CANCELLED, reason="cancelled by request (automatic recovery stopped)")
-        if j["state"] in TERMINAL:
+            out = self.transition(job_id, JobState.CANCELLED, reason=f"{reason} (automatic recovery stopped)")
+        elif j["state"] in TERMINAL:
             return j
-        return self.transition(job_id, JobState.CANCELLED, reason="cancelled by request")
+        else:
+            out = self.transition(job_id, JobState.CANCELLED, reason=reason)
+        self._cancel_orphaned_child(j)
+        return out
+
+    def _cancel_orphaned_child(self, parent: dict) -> None:
+        """Propagate a cancellation to the child job the parent was waiting on, unless another open job is also waiting on it (shared work)."""
+        child = (parent.get("progress") or {}).get("child_job")
+        if not child:
+            return
+        c = self.get(child)
+        if c is None or c["state"] in TERMINAL and c["state"] is not JobState.UNAVAILABLE_AFTER_DEADLINE:
+            return
+        others = [j for j in self.list(set(JobState) - set(TERMINAL)) if j["job_id"] != parent["job_id"] and (j["progress"] or {}).get("child_job") == child]
+        if not others:
+            self.cancel(child, reason=f"cancelled with its parent {parent['job_id']} (no other request was waiting on it)")
 
     def expired(self, job: dict) -> bool:
         d = parse_ts(job["deadline_at"])

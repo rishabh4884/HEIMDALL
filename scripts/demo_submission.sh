@@ -67,15 +67,19 @@ for _ in $(seq 1 20); do curl -s -o /dev/null "http://127.0.0.1:$PORT/api/v1/hea
 B="http://127.0.0.1:$PORT/api/v1"
 curl -s "$B/health"; echo
 curl -s -w '  -> HTTP %{http_code} in %{time_total}s\n' -o /dev/null -X POST -d '{"target_id":"NASA-01"}' "$B/investigations"
-JOB=$(curl -s -X POST -d '{"ra":10.0,"dec":-5.0,"category":"VARIABLE_STAR"}' "$B/investigations" | python3 -c '
-import json, sys
-d = json.load(sys.stdin)
-print("uncached coordinate ->", d.get("readiness"), d["job"]["job_id"], "must_resubmit:", d["must_resubmit"], file=sys.stderr)
-print(d["job"]["job_id"])')
 curl -s -X POST -d '{"ra":150.1,"dec":2.2,"radius":0.05,"detectors":[2],"max_observations":4,"cutout_size_deg":0.1}' "$B/runs" | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
 print("field run ->", "stored run " + d["run_id"] + " (reused)" if d.get("run_id") else "job " + d["job"]["job_id"] + " (" + d["readiness"] + ")")'
-# the demo cancels its own job so a running worker does not spend archive time on it
-curl -s -X POST "$B/jobs/$JOB/cancel" | python3 -c 'import json,sys; d=json.load(sys.stdin); print("cancelled demo job ->", d["readiness"], "must_resubmit:", d["must_resubmit"])'
+# Uncached request: sent to a second server on a throwaway, empty state directory with no worker attached, so the demo can never create
+# real archive work (a running worker on the real state would otherwise pick the job up).
+TMPSTATE="$(mktemp -d)"
+HEIMDALL_STATE_DIR="$TMPSTATE/state" HEIMDALL_CACHE_DIR="$TMPSTATE/cache" python3 -m heimdall serve --port "$((PORT + 1))" 2>/dev/null &
+SRV2=$!
+trap 'kill $SRV $SRV2 2>/dev/null || true; rm -rf "$TMPSTATE"' EXIT
+for _ in $(seq 1 20); do curl -s -o /dev/null "http://127.0.0.1:$((PORT + 1))/api/v1/health" && break; sleep 0.3; done
+curl -s -X POST -d '{"ra":10.0,"dec":-5.0,"category":"VARIABLE_STAR"}' "http://127.0.0.1:$((PORT + 1))/api/v1/investigations" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+print("uncached coordinate (throwaway state, no worker) ->", d.get("readiness"), d["job"]["job_id"], "must_resubmit:", d["must_resubmit"])'
 echo "done."

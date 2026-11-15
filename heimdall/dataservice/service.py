@@ -520,7 +520,17 @@ class DataService:
             except HeimdallError as exc:
                 failures += 1
                 last_error = {"code": exc.code.value, "message": exc.info.message, "detail": dict(exc.info.detail)}
-                items[key] = {"state": "WAITING", "error": _error_class(exc), "attempts": st.get("attempts", 0) + 1}
+                status = str(dict(exc.info.detail).get("http_status") or "")
+                rejected = status.startswith("4") and status not in ("408", "425", "429")
+                if rejected and st.get("rejected_attempts", 0) >= 1:
+                    # the archive rejected this exact request twice (e.g. HTTP 422 for a cutout outside the image): a permanent property of the
+                    # request, not an outage -- exclude the product with its reason instead of retrying it into the deadline
+                    items[key] = {"state": "QUARANTINED", "kind": "ARCHIVE_REJECTED", "reason": f"archive rejected the request twice (HTTP {status})",
+                                  "attempts": st.get("attempts", 0) + 1}
+                    failures -= 1
+                    continue
+                items[key] = {"state": "WAITING", "error": _error_class(exc), "attempts": st.get("attempts", 0) + 1,
+                              "rejected_attempts": st.get("rejected_attempts", 0) + (1 if rejected else 0)}
                 self.db.execute("INSERT INTO route_events(at,route,ok,error_class,latency_s) VALUES(?,?,?,?,?)",
                                 (now_iso(self.clock()), "calibration" if kind == "calib" else "product", 0, _error_class(exc), time.monotonic() - t0))
         job = self.jobs.get(jid)
@@ -536,7 +546,7 @@ class DataService:
         if required_calib_bad or not ready_obs:
             return self.jobs.transition(jid, JobState.INVALID_SOURCE_DATA, reason="required products failed validation and were quarantined", progress=progress,
                                         result={"quarantined": quarantined})
-        return self.jobs.transition(jid, JobState.COMPLETE, reason="all required verified data are stored locally" + (f"; {len(quarantined)} product(s) quarantined" if quarantined else ""),
+        return self.jobs.transition(jid, JobState.COMPLETE, reason="all required verified data are stored locally" + (f"; {len(quarantined)} product(s) excluded (quarantined or rejected by the archive)" if quarantined else ""),
                                     progress=progress, result={"ready": len(ready_obs), "quarantined": quarantined})
 
     def _fetch(self, key: str, kind: str, what) -> None:

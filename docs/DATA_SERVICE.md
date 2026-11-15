@@ -73,8 +73,10 @@ retained under a service-owned recovery policy (`JobQueue.recover_due`, run by e
 * a parent job that needs a deadline-expired child again revives it with the short attempt deadline and does **not** reset its window;
   map coverage requests (`DataService.coverage`) only report the state and never revive it;
 * `cancel` on a deadline-expired job moves it to `CANCELLED` and stops automatic recovery (`must_resubmit: true`).
-* Known limit: cancelling a parent (target/prefetch) job does not cancel child INDEX/ACQUIRE jobs it already created; they may be shared
-  with other requests and finish (or expire) on their own.
+* Cancelling a parent (target/prefetch/field) job also cancels the child it was waiting on, unless another open job waits on the same
+  child (shared work is never cancelled). Limit: only the child the parent currently waits on is tracked.
+* A product request the archive rejects twice with a permanent 4xx (not 408/425/429), e.g. HTTP 422 for a cutout outside the image, is
+  excluded (`kind: ARCHIVE_REJECTED`, listed with the quarantined products in the manifest) instead of being retried into the deadline.
 
 ## Long-running worker (deployment mode)
 
