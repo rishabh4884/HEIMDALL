@@ -672,9 +672,13 @@ function renderHeader() {
   $("judge").hidden = Boolean(r);
 }
 
-// Judge mode: one obvious path from the landing page to the stored NASA-02 result and its evidence journey.
+// One obvious path from the landing page to the stored NASA-02 result and its evidence journey.
 async function openJudge() {
   await openRecord("target", "NASA-02");
+  // The landing experience is intentionally an all-sky view. Opening the
+  // demonstration should retain that context rather than dropping visitors
+  // into the target's very tight science-field zoom.
+  showAllSky();
   setTab("answer");
   $("inspector").scrollIntoView({ block: "start", behavior: "smooth" });
   $("inspector").focus({ preventScroll: true });
