@@ -90,6 +90,9 @@ class LocalStoreSource(DataSource):
             raise HeimdallError.of(ErrorCode.RETRIEVAL_FAILED, "product is not in the verified local store", obs_id=request.obs_id, offline="true")
         if self.manifest is not None and stored.sha256 not in {p["sha256"] for p in self.manifest["products"]}:
             raise HeimdallError.of(ErrorCode.INPUT_INVALID, "product is not part of the frozen input manifest", obs_id=request.obs_id)
+        if not self.service.store.verify(stored.key):  # full re-hash: a same-size corruption is never silently analysed
+            raise HeimdallError.of(ErrorCode.DATA_MALFORMED, "stored product no longer matches its recorded SHA-256 (corrupted on disk)",
+                                   obs_id=request.obs_id, sha256=stored.sha256)
         origin = DataOrigin.SYNTHETIC_TEST_FIXTURE if stored.origin == "SYNTHETIC_TEST_FIXTURE" else DataOrigin.CACHED
         prod = SourceProduct(source_id=SOURCE_ID, product_id=request.obs_id, release=stored.release, checksum=stored.sha256, checksum_algorithm="sha256",
                              access_reference=stored.access_reference)
@@ -102,5 +105,8 @@ class LocalStoreSource(DataSource):
         stored = self.service.store.get(calibration_key(kind, detector), count=True)
         if stored is None:
             raise HeimdallError.of(ErrorCode.RETRIEVAL_FAILED, f"calibration {kind} D{detector} is not in the verified local store", offline="true")
+        if not self.service.store.verify(stored.key):
+            raise HeimdallError.of(ErrorCode.DATA_MALFORMED, f"stored calibration {kind} D{detector} no longer matches its recorded SHA-256",
+                                   sha256=stored.sha256)
         return stored.path, SourceProduct(source_id=SOURCE_ID, product_id=Path(stored.access_reference or kind).stem, release=None, checksum=stored.sha256,
                                           checksum_algorithm="sha256", access_reference=stored.access_reference)

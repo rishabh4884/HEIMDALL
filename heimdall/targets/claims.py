@@ -16,10 +16,12 @@ accurate weaker type and records ``downgraded_from`` and the failing checks; inf
 
 from __future__ import annotations
 
+import math
+
 from ..pipeline.results import canonical_hash
 
 CLAIMS_SCHEMA = "heimdall.claims/1.0"
-CLAIMS_METHOD_VERSION = "1.1.0"  # 1.1.0: analysis-specific, status-aware artefact gate; real uncertainty check
+CLAIMS_METHOD_VERSION = "1.2.0"  # 1.1.0: analysis-specific artefact gate; 1.2.0: complete expected-hypothesis accounting, evidence/provenance/uncertainty audits
 
 # What each analysis verdict may claim. Strength order (strongest first) is used for downgrades.
 MOTION_CLAIMS = {
@@ -47,44 +49,82 @@ def _check(name: str, passed: bool, detail: str, required: bool = True) -> dict:
     return {"check": name, "passed": bool(passed), "required": required, "detail": detail}
 
 
-def _products_complete(result: dict) -> tuple[bool, str]:
-    prods = result.get("products") or []
+def _products_complete(result: dict, used: list | None = None) -> tuple[bool, str]:
+    prods = [p for p in result.get("products") or [] if isinstance(p, dict)]
     if not prods:
         return False, "no products recorded"
+    known = {p.get("obs_id") for p in prods} | {p.get("product_id") for p in prods}
+    orphan = sorted({u for u in used or [] if u not in known})
+    if orphan:
+        return False, f"{len(orphan)} observation(s) used by the claim have no product record (e.g. {orphan[0]})"
     missing = [p.get("obs_id") or p.get("product_id") for p in prods if not (p.get("sha256") and p.get("release") and p.get("retrieved_at") and p.get("access_reference"))]
     return (not missing), (f"{len(prods)} products, each with sha256, release, retrieval time and access reference" if not missing
                            else f"{len(missing)} products lack checksum/release/retrieval time/access reference")
 
 
-# Artefact / ordinary-explanation hypotheses that bear on each analysis (slugs from targets/hypotheses.py).
-ARTEFACT_SLUGS = {"motion": ("registration_artifact", "blend_confusion", "unresolved_companion"),
+# Artefact / ordinary-explanation hypotheses that every assertive claim of an analysis must account for (slugs from targets/hypotheses.py).
+# "unresolved companion" is not a separate hypothesis: blend_confusion explicitly covers "a blended neighbour or unresolved companion".
+ARTEFACT_SLUGS = {"motion": ("registration_artifact", "blend_confusion"),
                   "variability": ("calibration_artifact", "blend_contamination")}
-UNRESOLVED = {"SUPPORTED", "CANNOT_EXCLUDE", "NOT_ASSESSABLE", "CONSISTENT"}
+EXCLUDED_STATES = {"DISFAVOURED", "REJECTED", "EXCLUDED"}
+KNOWN_STATES = EXCLUDED_STATES | {"SUPPORTED", "CANNOT_EXCLUDE", "NOT_ASSESSABLE", "CONSISTENT", "NOT_APPLICABLE"}
+
+
+def _artefact_state(hyps: list[dict]) -> str:
+    """One conservative state per expected hypothesis: missing -> MISSING; conflicting duplicates or unknown/malformed status -> UNKNOWN;
+    NOT_APPLICABLE counts as excluded only with a recorded justification (``not_applicable_reason``)."""
+    if not hyps:
+        return "MISSING"
+    states = {(h.get("status") if isinstance(h.get("status"), str) else None) for h in hyps}
+    if len(states) != 1:
+        return "UNKNOWN"
+    st = states.pop()
+    if st not in KNOWN_STATES:
+        return "UNKNOWN"
+    if st == "NOT_APPLICABLE":
+        return "EXCLUDED" if all(str(h.get("not_applicable_reason") or "").strip() for h in hyps) else "UNKNOWN"
+    return "EXCLUDED" if st in EXCLUDED_STATES else st
 
 
 def _artefact_check(result: dict, analysis_name: str, claim_type: str) -> dict:
-    """Required for assertive claims: the analysis' own artefact hypotheses must be recorded; none may be SUPPORTED; a DETECTION additionally
-    needs every one of them excluded (a CONSISTENT_WITH claim, by definition, allows unexcluded alternatives)."""
+    """Required for assertive claims: every expected artefact hypothesis of the analysis must be accounted for; none may be SUPPORTED or
+    missing/unknown; a DETECTION additionally needs every one of them excluded (a CONSISTENT_WITH claim, by definition, allows
+    unexcluded alternatives that are recorded as CANNOT_EXCLUDE / NOT_ASSESSABLE)."""
     if analysis_name not in ARTEFACT_SLUGS:  # per-image measurements/limits: quality flags and saturation are recorded per image instead
         return _check("artefact_and_ordinary_explanations_visible", True, "per-image quantity; flags, saturation and contamination recorded per image")
-    slugs = ARTEFACT_SLUGS[analysis_name]
-    hyps = [h for h in result.get("hypotheses") or [] if h.get("slug") in slugs]
-    states = {h["slug"]: h.get("status") for h in hyps}
+    hyps = [h for h in result.get("hypotheses") or [] if isinstance(h, dict)]
+    states = {slug: _artefact_state([h for h in hyps if h.get("slug") == slug]) for slug in ARTEFACT_SLUGS[analysis_name]}
     if claim_type not in ASSERTIVE:
-        return _check("artefact_and_ordinary_explanations_visible", True, f"non-assertive claim; recorded: {states or 'none'}")
-    if not hyps:
-        return _check("artefact_and_ordinary_explanations_visible", False, f"no artefact hypothesis recorded for the {analysis_name} analysis")
-    supported = [k for k, v in states.items() if v == "SUPPORTED"]
-    open_ = [k for k, v in states.items() if v in UNRESOLVED]
-    ok = not supported and (claim_type != "DETECTION" or not open_)
-    return _check("artefact_and_ordinary_explanations_visible", ok, f"{analysis_name} artefact hypotheses {states}"
-                  + ("; an artefact explanation is supported" if supported else "; not excluded, so a detection is not claimed" if not ok else ""))
+        return _check("artefact_and_ordinary_explanations_visible", True, f"non-assertive claim; expected artefact hypotheses: {states}")
+    bad = [k for k, v in states.items() if v in ("MISSING", "UNKNOWN", "SUPPORTED")]
+    open_ = [k for k, v in states.items() if v != "EXCLUDED"]
+    ok = not bad and (claim_type != "DETECTION" or not open_)
+    why = ("" if ok else f"; unaccounted or supported: {bad}" if bad else "; not all excluded, so a detection is not claimed")
+    return _check("artefact_and_ordinary_explanations_visible", ok, f"{analysis_name} expected artefact hypotheses {states}{why}")
+
+
+def _finite_positive(x) -> bool:
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x) and x > 0
+
+
+def _evidence_check(result: dict, source: str, claim_type: str) -> tuple[bool, str]:
+    """Evidence accounting for an analysis claim: assertive claims need at least one evidence item; duplicated evidence ids or identical
+    items cannot count twice; items sharing a dependency group are one line of evidence."""
+    ev = [e for e in result.get("evidence") or [] if isinstance(e, dict) and e.get("source") == source]
+    ids = [e.get("evidence_id") for e in ev]
+    dup = sorted({i for i in ids if ids.count(i) > 1})
+    groups = sorted({e.get("dependency_group") or e.get("evidence_id") for e in ev})
+    if claim_type in ASSERTIVE and not ev:
+        return False, f"no {source} evidence items behind an assertive claim"
+    if dup:
+        return False, f"duplicated evidence ids {dup}"
+    return True, f"{len(ev)} evidence item(s) in {len(groups)} independent dependency group(s): {groups}"
 
 
 def _gate(result: dict, analysis: dict | None, claim_type: str, *, uncertainty_ok: bool, comparability: tuple[bool, str], dependency: tuple[bool, str],
-          analysis_name: str = "") -> list[dict]:
+          analysis_name: str = "", used: list | None = None) -> list[dict]:
     synthetic = result.get("data_origin") != "REAL"
-    prov_ok, prov_detail = _products_complete(result)
+    prov_ok, prov_detail = _products_complete(result, used)
     mv = (analysis or {}).get("method_version") or ""
     man = (result.get("input_manifest") or {}).get("manifest_id")
     return [
@@ -127,8 +167,9 @@ def _motion_claim(result: dict, m: dict, base: dict) -> dict:
         values.append({"name": "catalogue_velocity", "value": cv.get("total"), "unit": "arcsec/yr (angular)", "origin": "CATALOGUE"})
     if m.get("velocity_difference_pull_sigma") is not None:
         values.append({"name": "measured_minus_catalogue", "value": m["velocity_difference_pull_sigma"], "unit": "sigma", "origin": "MEASURED"})
-    unc_ok = all(v.get("origin") != "MEASURED" or v["name"] != "fitted_apparent_velocity" or (v.get("sigma_east") is not None and v.get("sigma_north") is not None)
-                 for v in values)
+    fitted = [v for v in values if v["name"] == "fitted_apparent_velocity"]
+    unc_ok = (all(_finite_positive(v.get("sigma_east")) and _finite_positive(v.get("sigma_north")) for v in fitted)
+              and (bool(fitted) or ctype not in ASSERTIVE))
     null = m.get("control_null_test") or {}
     comp = (null.get("status") == "COMPLETED" or ctype not in ASSERTIVE,
             f"control-star null test {null.get('status')} ({null.get('n_controls')} controls, pull scatter {null.get('pull_robust_std')})"
@@ -144,8 +185,10 @@ def _motion_claim(result: dict, m: dict, base: dict) -> dict:
                     "does_not_establish": ["distance, physical velocity, orbit or mass (angular motion only)",
                                            "that the source is newly discovered or unusual"] + (["that registration error or a blended companion is excluded"]
                                                                                                if ctype in ASSERTIVE else [])}
-    checks = _gate(result, m, ctype, uncertainty_ok=unc_ok, comparability=comp, analysis_name="motion",
-                   dependency=(True, f"motion evidence counted once per dependency group: {groups}" if groups else "no motion evidence items"))
+    if ctype in ASSERTIVE and not used:
+        unc_ok = False  # an assertive motion claim without any measured track point has no measurement behind it
+    checks = _gate(result, m, ctype, uncertainty_ok=unc_ok, comparability=comp, analysis_name="motion", used=used,
+                   dependency=_evidence_check(result, "targets.motion", ctype))
     return _finalise(claim, checks)
 
 
@@ -177,9 +220,10 @@ def _variability_claim(result: dict, v: dict, base: dict) -> dict:
                                     "no period is fitted"], "caveats": v.get("caveats") or [], "reasons": [v.get("verdict_reason")],
                     "does_not_establish": ["a period or variability class", "that the source is constant (a non-detection is sensitivity-limited)"
                                            if ctype == "NON_DETECTION" else "a physical cause of any flux change"]}
-    unc_ok = all(s["test"].get("chi2") is not None for s in completed)
-    checks = _gate(result, v, ctype, uncertainty_ok=unc_ok, comparability=comp, analysis_name="variability",
-                   dependency=(True, "one claim from the strongest series; other series are not added as independent confirmations"))
+    unc_ok = all(s["test"].get("chi2") is not None and math.isfinite(s["test"]["chi2"]) for s in completed) and (bool(completed) or ctype not in ASSERTIVE)
+    dep_ok, dep_detail = _evidence_check(result, "targets.variability", ctype)
+    checks = _gate(result, v, ctype, uncertainty_ok=unc_ok, comparability=comp, analysis_name="variability", used=claim["observations_used"],
+                   dependency=(dep_ok, dep_detail + "; one claim from the strongest series, other series not added as independent confirmations"))
     return _finalise(claim, checks)
 
 

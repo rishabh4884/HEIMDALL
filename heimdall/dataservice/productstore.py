@@ -129,14 +129,17 @@ class ProductStore:
     def get(self, key: str, *, count: bool = False) -> StoredProduct | None:
         """A verified product for ``key``, re-checking that the object still exists with the recorded size and hash."""
         r = self.db.one("SELECT k.*, p.path, p.size FROM product_keys k JOIN products p ON p.sha256=k.sha256 WHERE k.key=?", (key,))
-        ok = r is not None and Path(r["path"]).is_file() and Path(r["path"]).stat().st_size == r["size"]
+        # Objects are content-addressed under this store's root; the recorded path is informational only, so a store moved to another
+        # directory (evidence import, backup restore) stays valid.
+        path = self._object_path(r["sha256"]) if r is not None else None
+        ok = r is not None and path.is_file() and path.stat().st_size == r["size"]
         if count:
             self.hits += int(ok)
             self.misses += int(not ok)
             self.db.bump("store_hits" if ok else "store_misses")
         if not ok:
             return None
-        return StoredProduct(key=key, sha256=r["sha256"], path=Path(r["path"]), size=r["size"], kind=r["kind"], obs_id=r["obs_id"], release=r["release"],
+        return StoredProduct(key=key, sha256=r["sha256"], path=path, size=r["size"], kind=r["kind"], obs_id=r["obs_id"], release=r["release"],
                              access_reference=r["access_reference"], origin=r["origin"], route=r["route"], archive_checksum=r["archive_checksum"],
                              retrieved_at=r["retrieved_at"], meta=json.loads(r["meta"] or "{}"))
 
@@ -175,7 +178,7 @@ class ProductStore:
             evicted.append(r["sha256"])
             used -= r["size"]
             if not dry_run:
-                Path(r["path"]).unlink(missing_ok=True)
+                self._object_path(r["sha256"]).unlink(missing_ok=True)
                 self.db.execute("DELETE FROM product_keys WHERE sha256=?", (r["sha256"],))
                 self.db.execute("DELETE FROM products WHERE sha256=?", (r["sha256"],))
         return {"evicted": evicted, "dry_run": dry_run, "bytes_after": used, "still_over_goal": used > goal, "pinned_objects_kept": self.usage()["pinned_objects"]}

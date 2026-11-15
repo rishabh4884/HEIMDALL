@@ -210,6 +210,12 @@ def _parser() -> argparse.ArgumentParser:
     s = sub.add_parser("cache", help="list or clear cached products")
     s.add_argument("action", choices=["list", "clear"])
     s.add_argument("--older-than-days", type=float)
+    s = sub.add_parser("evidence", help="portable evidence bundles: export saved results with their exact inputs, verify, import into fresh state")
+    s.add_argument("action", choices=["export", "verify", "import"])
+    s.add_argument("path", type=Path, help="bundle directory (export/import/verify) or .tar.gz (verify/import)")
+    s.add_argument("--run", action="append", default=[], help="export: also include this blind-pipeline run id (repeatable)")
+    s.add_argument("--archive", action="store_true", help="export: also write <path>.tar.gz")
+    s.add_argument("--force", action="store_true", help="import: merge into a non-empty state directory")
     s = sub.add_parser("serve", help="HTTP JSON API for the frontend (readiness-first; see docs/FRONTEND_HANDOFF.md)")
     s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--port", type=int, default=8765)
@@ -227,6 +233,19 @@ def _run(args) -> int:
     from .pipeline.runner import InvestigationRequest
 
     cfg_path = getattr(args, "config", None)
+    if args.command == "evidence":
+        from .config import load_settings
+        from .evidence import export_bundle, import_bundle, verify_bundle
+        st = load_settings(env_file=_env_file())
+        if args.action == "export":
+            _print(export_bundle(Path(st.state_dir), Path(st.cache_dir), args.path, runs=args.run, archive=args.archive), True)
+        elif args.action == "verify":
+            rep = verify_bundle(args.path)
+            _print(rep, True)
+            return 0 if rep["ok"] else 1
+        else:
+            _print(import_bundle(args.path, Path(st.state_dir), Path(st.cache_dir), force=args.force), True)
+        return 0
     if args.command == "serve":
         from .server import serve
         serve(lambda: Engine.from_environment(_env_file()), host=args.host, port=args.port, with_worker=args.with_worker)

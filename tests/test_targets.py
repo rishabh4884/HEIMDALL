@@ -719,7 +719,9 @@ class ClaimTests(unittest.TestCase):
         var = analyse_variability(ms, cfg)
         d = {"investigation_id": "tinv:NASA-04:0000cccc", "target": {"target_id": "NASA-04", "category": "VARIABLE_STAR"}, "data_origin": "REAL",
              "status": {"execution": "COMPLETED"}, "measurements": ms, "analyses": {"variability": var},
-             "hypotheses": [{"slug": "calibration_artifact", "status": "CANNOT_EXCLUDE", "suggested_next_step": "compare detectors"}],
+             "hypotheses": [{"slug": "calibration_artifact", "status": "CANNOT_EXCLUDE", "suggested_next_step": "compare detectors"},
+                            {"slug": "blend_contamination", "status": "DISFAVOURED"}],
+             "evidence": [{"evidence_id": "ev:v1", "source": "targets.variability", "dependency_group": "forced_photometry"}],
              "products": [{"obs_id": m["obs_id"], "sha256": "ab" * 32, "release": "spherex_dr1", "retrieved_at": "2026-11-15T00:00:00+00:00",
                            "access_reference": "ibe/x.fits"} for m in ms], "conclusion": {"quick_answer": "q"}}
         d.update(over)
@@ -848,3 +850,72 @@ class ComparabilityCaveatTests(unittest.TestCase):
         two = analyse_variability(series_measurements([2000], n_controls=12), loose)  # 2 points, 1 epoch: still not comparable (epochs)
         self.assertTrue(all(not s["comparability"]["change_significance_allowed"] for s in two["series"]))
 
+
+
+class ClaimGateAuditTests(unittest.TestCase):
+    """Audit defect A (2026-11-15): the artefact gate must account for every expected hypothesis; neighbouring checks must be conservative."""
+
+    def motion_doc(self, verdict="MOTION_DETECTED_INCONSISTENT_WITH_CATALOGUE", reg="DISFAVOURED", blend="DISFAVOURED"):
+        obs = ["O1", "O2", "O3"]
+        hyps = []
+        if reg is not None:
+            hyps.append({"slug": "registration_artifact", "status": reg})
+        if blend is not None:
+            hyps.append({"slug": "blend_confusion", "status": blend})
+        return {"investigation_id": "tinv:NASA-01:0000dddd", "target": {"target_id": "NASA-01", "category": "MOVING_OBJECT"}, "data_origin": "REAL",
+                "status": {"execution": "COMPLETED"}, "measurements": [],
+                "analyses": {"motion": {"verdict": verdict, "method_id": "target_motion", "method_version": "1.0.0-provisional",
+                                        "fitted_velocity_arcsec_yr": {"total": 5.0, "east": 3.0, "north": 4.0, "sigma_east": 0.2, "sigma_north": 0.2},
+                                        "catalogue_velocity_arcsec_yr": {"total": 1.0}, "velocity_difference_pull_sigma": 9.0,
+                                        "control_null_test": {"status": "COMPLETED", "n_controls": 8, "pull_robust_std": 1.1},
+                                        "track": [{"obs_id": o} for o in obs]}},
+                "hypotheses": hyps,
+                "evidence": [{"evidence_id": "ev:1", "source": "targets.motion", "dependency_group": "centroids"},
+                             {"evidence_id": "ev:2", "source": "targets.motion", "dependency_group": "centroids"}],
+                "products": [{"obs_id": o, "sha256": "ab" * 32, "release": "spherex_dr1", "retrieved_at": "2026-11-15T00:00:00+00:00",
+                              "access_reference": "ibe/x.fits"} for o in obs], "conclusion": {"quick_answer": "q"}}
+
+    def motion(self, d):
+        from heimdall.targets.claims import build_claims
+        return next(c for c in build_claims(d)["claims"] if c["analysis"] == "motion")
+
+    def test_reproduced_defect_detection_with_a_missing_blend_hypothesis_is_downgraded(self):
+        c = self.motion(self.motion_doc(blend=None))
+        self.assertEqual((c["claim_type"], c["downgraded_from"]), ("INCONCLUSIVE", "DETECTION"))
+        self.assertIn("artefact_and_ordinary_explanations_visible", c["gate"]["failed_required"])
+
+    def test_positive_case_all_expected_artefacts_excluded_keeps_the_detection(self):
+        c = self.motion(self.motion_doc())
+        self.assertEqual(c["claim_type"], "DETECTION")
+        self.assertTrue(c["gate"]["passed"])
+
+    def test_unknown_malformed_duplicate_or_unassessed_states_are_conservative(self):
+        for reg in ("MAYBE", None, "NOT_ASSESSABLE", 3):
+            d = self.motion_doc(reg=reg) if reg is not None else self.motion_doc(reg=None)
+            self.assertEqual(self.motion(d)["claim_type"], "INCONCLUSIVE", reg)
+        d = self.motion_doc()
+        d["hypotheses"].append({"slug": "registration_artifact", "status": "SUPPORTED"})  # conflicting duplicate
+        self.assertEqual(self.motion(d)["claim_type"], "INCONCLUSIVE")
+        d = self.motion_doc(reg="NOT_APPLICABLE")  # not applicable without a recorded justification
+        self.assertEqual(self.motion(d)["claim_type"], "INCONCLUSIVE")
+        d["hypotheses"][0]["not_applicable_reason"] = "single-epoch astrometry from one exposure: no registration step"
+        self.assertEqual(self.motion(d)["claim_type"], "DETECTION")
+
+    def test_consistent_with_allows_open_but_not_missing_or_supported_artefacts(self):
+        ok = self.motion(self.motion_doc("MOTION_DETECTED_CONSISTENT_WITH_CATALOGUE", reg="CANNOT_EXCLUDE"))
+        self.assertEqual(ok["claim_type"], "CONSISTENT_WITH")
+        self.assertEqual(self.motion(self.motion_doc("MOTION_DETECTED_CONSISTENT_WITH_CATALOGUE", blend=None))["claim_type"], "INCONCLUSIVE")
+        self.assertEqual(self.motion(self.motion_doc("MOTION_DETECTED_CONSISTENT_WITH_CATALOGUE", reg="SUPPORTED"))["claim_type"], "INCONCLUSIVE")
+
+    def test_neighbouring_checks_reject_empty_evidence_absent_measurements_bad_uncertainty_orphan_products_and_duplicates(self):
+        d = self.motion_doc(); d["evidence"] = []
+        self.assertIn("evidence_dependencies_not_double_counted", self.motion(d)["gate"]["failed_required"])
+        d = self.motion_doc(); d["evidence"].append(dict(d["evidence"][0]))
+        self.assertIn("evidence_dependencies_not_double_counted", self.motion(d)["gate"]["failed_required"])
+        d = self.motion_doc(); d["analyses"]["motion"]["track"] = []
+        self.assertIn("measurement_and_uncertainty_valid", self.motion(d)["gate"]["failed_required"])
+        for bad in (0.0, -1.0, None, float("inf")):
+            d = self.motion_doc(); d["analyses"]["motion"]["fitted_velocity_arcsec_yr"]["sigma_east"] = bad
+            self.assertIn("measurement_and_uncertainty_valid", self.motion(d)["gate"]["failed_required"], bad)
+        d = self.motion_doc(); d["products"] = d["products"][:2]  # O3 used but has no product record
+        self.assertIn("provenance_complete", self.motion(d)["gate"]["failed_required"])

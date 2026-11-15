@@ -422,9 +422,15 @@ class DataService:
             self.db.execute("INSERT INTO route_events(at,route,ok,error_class,latency_s) VALUES(?,?,?,?,?)",
                             (now, a["route"], int(a["outcome"] == "OK"), None if a["outcome"] == "OK" else f"{a.get('error_code')}:{a.get('http_status') or ''}", latency))
 
-    def _breaker_hint(self) -> float:
+    def _breaker_hint(self, error: dict | None = None) -> float:
+        """Earliest sensible next attempt: an open circuit breaker's remaining cooldown, or a server Retry-After carried by the last error."""
         br = getattr(self.source, "breakers", None)
-        return min((b.retry_in_s() for b in br.values()), default=0.0) if br else 0.0
+        hint = min((b.retry_in_s() for b in br.values()), default=0.0) if br else 0.0
+        try:
+            hint = max(hint, min(float(((error or {}).get("detail") or {}).get("retry_after_s") or 0.0), 3600.0))  # Retry-After, bounded
+        except (TypeError, ValueError):
+            pass
+        return hint
 
     # -- INDEX ---------------------------------------------------------------------------------------------------
     def _run_index(self, job: dict) -> dict:
@@ -446,7 +452,8 @@ class DataService:
         except HeimdallError as exc:
             self._note_routes((getattr(self.source, "last_discovery", None) or {}).get("attempts"), time.monotonic() - t0)
             return self.jobs.schedule_retry(self.jobs.get(jid), error={"code": exc.code.value, "message": exc.info.message, "detail": dict(exc.info.detail)},
-                                            reason=f"archive unavailable ({_error_class(exc)}); retrying automatically", min_delay_s=self._breaker_hint())
+                                            reason=f"archive unavailable ({_error_class(exc)}); retrying automatically",
+                                            min_delay_s=self._breaker_hint({"detail": dict(exc.info.detail)}))
         ld = getattr(self.source, "last_discovery", None) or {}
         self._note_routes(ld.get("attempts"), time.monotonic() - t0)
         route = ld.get("route_used") or getattr(self.source, "source_id", None)
@@ -540,7 +547,7 @@ class DataService:
                               "total": len(todo)}
         if pending:
             return self.jobs.schedule_retry(job, error=last_error or {"code": "INCOMPLETE", "message": "run budget exhausted"}, progress=progress,
-                                            reason=f"{len(pending)} of {len(todo)} products still to acquire; retrying automatically", min_delay_s=self._breaker_hint())
+                                            reason=f"{len(pending)} of {len(todo)} products still to acquire; retrying automatically", min_delay_s=self._breaker_hint(last_error))
         required_calib_bad = any(k.startswith("calib:") for k in quarantined)
         ready_obs = [i for i in plan.items if self.store.get(i.key) is not None]
         if required_calib_bad or not ready_obs:

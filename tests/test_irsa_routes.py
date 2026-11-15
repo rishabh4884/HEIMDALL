@@ -296,6 +296,43 @@ class RouteTests(unittest.TestCase):
         with self.assertRaises(HeimdallError):
             self.src(Router(sia=[DOWN], tap=[DOWN])).check_access()
 
+    def test_access_errors_follow_the_contract_and_keep_the_outage_classification(self):
+        # Reproduces the independently observed failure: both discovery routes answered HTTP 502 through a proxy.
+        from tests.contract.data_source_contract import ACCESS_ERROR_CODES
+        cases = [(Router(sia=[DOWN], tap=[DOWN]), "ARCHIVE_UNREACHABLE", "UPSTREAM_HTTP_5XX", "502"),
+                 (Router(sia=[TransportTimeout("t")], tap=[TransportTimeout("t")]), "ARCHIVE_TIMEOUT", "TIMEOUT", ""),
+                 (Router(sia=[HttpResponse(401, b"")], tap=[DOWN]), "AUTHENTICATION_FAILED", "HTTP_401", None),
+                 (Router(sia=[HttpResponse(403, b"")], tap=[TransportTimeout("t")]), "ACCESS_DENIED", "HTTP_403", None),
+                 (Router(sia=[ok("not csv")], tap=[ok("nope")]), "ARCHIVE_UNREACHABLE", "UNEXPECTED_RESPONSE", None)]
+        for router, code, classification, status in cases:
+            with self.assertRaises(HeimdallError) as cm:
+                self.src(router).check_access()
+            e = cm.exception
+            self.assertIn(str(e.code), ACCESS_ERROR_CODES)
+            self.assertEqual((str(e.code), e.info.detail["classification"]), (code, classification))
+            if status is not None:
+                self.assertEqual(e.info.detail["http_status"], status)
+            self.assertIn("sia2=", e.info.detail["routes"])
+        with self.assertRaises(HeimdallError) as cm:  # discovery keeps its item-level semantics: a 502 is a retrieval failure, never "no observations"
+            self.src(Router(sia=[DOWN], tap=[DOWN])).discover(Q)
+        self.assertEqual(str(cm.exception.code), "RETRIEVAL_FAILED")
+
+
+class IrsaContractUnderOutageTests(unittest.TestCase):
+    """The shared DataSource contract run against the real adapter while every route returns HTTP 502."""
+
+    def test_contract_check_access_under_a_502_outage(self):
+        from tests.contract.data_source_contract import ACCESS_ERROR_CODES
+        tmp = tempfile.mkdtemp()
+        try:
+            src = IrsaSpherexSource(load_settings(environ={"HEIMDALL_CACHE_DIR": tmp, "HEIMDALL_MAX_RETRIES": "1"}),
+                                    transport=lambda *a, **k: DOWN, sleep=lambda s: None, jitter=0.0)
+            with self.assertRaises(HeimdallError) as cm:
+                src.check_access()
+            self.assertIn(str(cm.exception.code), ACCESS_ERROR_CODES)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

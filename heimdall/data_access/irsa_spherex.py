@@ -94,6 +94,28 @@ def _floats(text: str, name: str) -> float:
         raise HeimdallError.of(ErrorCode.INPUT_INVALID, f"filter {name} must be a number", filter=name) from None
 
 
+def access_error(failed: list[dict]) -> tuple[ErrorCode, str]:
+    """Map failed discovery-route probes to the access contract (check_access may raise only access codes).
+
+    401 -> AUTHENTICATION_FAILED; 403 -> ACCESS_DENIED; every route timed out -> ARCHIVE_TIMEOUT; anything else (HTTP 5xx from IRSA or an
+    intermediate proxy, connection failure, an unexpected or malformed answer) -> ARCHIVE_UNREACHABLE. The exact HTTP status and per-route
+    error stay in the error detail (``classification``, ``routes``, ``http_status``) so an outage remains an outage in every layer; it is never
+    re-labelled as a retrieval or data failure."""
+    statuses = {str(f.get("http_status") or "") for f in failed}
+    codes = {f.get("error_code") for f in failed}
+    if "401" in statuses or "AUTHENTICATION_FAILED" in codes:
+        return ErrorCode.AUTHENTICATION_FAILED, "HTTP_401"
+    if "403" in statuses or "ACCESS_DENIED" in codes:
+        return ErrorCode.ACCESS_DENIED, "HTTP_403"
+    if codes == {"ARCHIVE_TIMEOUT"}:
+        return ErrorCode.ARCHIVE_TIMEOUT, "TIMEOUT"
+    if any(st.startswith("5") for st in statuses):
+        return ErrorCode.ARCHIVE_UNREACHABLE, "UPSTREAM_HTTP_5XX"
+    if codes <= {"ARCHIVE_UNREACHABLE", "ARCHIVE_TIMEOUT"}:
+        return ErrorCode.ARCHIVE_UNREACHABLE, "CONNECTION_FAILURE"
+    return ErrorCode.ARCHIVE_UNREACHABLE, "UNEXPECTED_RESPONSE"
+
+
 class IrsaSpherexSource(DataSource):
     """IRSA SPHEREx source.
 
@@ -225,9 +247,11 @@ class IrsaSpherexSource(DataSource):
             raise HeimdallError.of(ErrorCode.ARCHIVE_UNREACHABLE, "offline mode: no network request is made", offline="true")
         health = {h["route"]: h for h in self.route_health()[:2]}
         if all(h["status"] != "OK" for h in health.values()):
-            first = next(iter(health.values()))
-            raise HeimdallError.of(ErrorCode.ARCHIVE_UNREACHABLE if first["error_code"] == "ARCHIVE_UNREACHABLE" else ErrorCode.RETRIEVAL_FAILED,
-                                   "no IRSA discovery route answered: " + "; ".join(f"{k}: {v['detail']}" for k, v in health.items()))
+            code, classification = access_error(list(health.values()))
+            raise HeimdallError.of(code, "no IRSA discovery route answered: " + "; ".join(f"{k}: {v['detail']}" for k, v in health.items()),
+                                   classification=classification,
+                                   routes=";".join(f"{k}={v['error_code']}:{v['http_status'] or '-'}" for k, v in health.items()),
+                                   http_status=",".join(sorted({str(v["http_status"]) for v in health.values() if v["http_status"]})) or "")
         detail = "IRSA discovery reachable via " + ", ".join(k for k, v in health.items() if v["status"] == "OK") + \
                  ("; unavailable: " + ", ".join(k for k, v in health.items() if v["status"] != "OK") if any(v["status"] != "OK" for v in health.values()) else "") + \
                  "; no credentials required"

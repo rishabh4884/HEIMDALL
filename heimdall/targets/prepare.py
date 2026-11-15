@@ -47,11 +47,29 @@ def request_key(spec: TargetSpec, opts: TargetOptions, config_hash: str, manifes
     return "tres:" + digest([spec.to_dict(), opts.to_dict(), config_hash, manifest_id], 20)
 
 
+def saved_version(service: DataService, investigation_id: str | None, saved_to: str | None = None) -> dict | None:
+    """The immutable per-version file of a target investigation (never ``latest.json``, which moves on), verified by its id. Looked up next
+    to the recorded result path, then under the state directory that holds the service (``<state>/dataservice``), so moved or imported
+    state stays valid."""
+    if not investigation_id or investigation_id.count(":") != 2:
+        return None
+    _, tid, h = investigation_id.split(":")
+    candidates = ([Path(saved_to).parent / f"{h}.json"] if saved_to else []) + [service.db.path.parent.parent / "targets" / tid / f"{h}.json"]
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if doc.get("investigation_id") == investigation_id:
+            return doc
+    return None
+
+
 def _stored_result(service: DataService, key: str) -> dict | None:
     r = service.db.one("SELECT * FROM investigation_results WHERE key=?", (key,))
-    if r is None or not Path(r["saved_to"]).is_file():
-        return None
-    return json.loads(Path(r["saved_to"]).read_text(encoding="utf-8"))
+    return None if r is None else saved_version(service, r["investigation_id"], r["saved_to"])
 
 
 def advance(service: DataService, spec: TargetSpec, opts: TargetOptions, *, settings, config, registry, store, online: bool, progress=None,
@@ -149,7 +167,15 @@ def request_investigation(service: DataService, spec: TargetSpec, opts: TargetOp
                    analyse=analyse_inline)
     if step["state"] == "DONE":
         out = step["result"]
-        out["data_status"] = {"readiness": Readiness.READY.value, "served_from": "verified local data (no archive request)", "manifest_id": (step.get("manifest") or {}).get("manifest_id")}
+        out["data_status"] = {"readiness": Readiness.READY.value, "served_from": "verified local data (no archive request)", "manifest_id": (step.get("manifest") or {}).get("manifest_id"),
+                              "result_kind": "STORED_RESULT_REPLAY" if step.get("reused") else "COMPUTED_NOW",
+                              "result_created_at": out.get("created_at")}
+        imp = service.db.path.parent.parent / "evidence_import.json"
+        if imp.is_file():
+            try:
+                out["data_status"]["evidence_bundle"] = json.loads(imp.read_text(encoding="utf-8")).get("bundle_id")
+            except (OSError, ValueError):
+                out["data_status"]["evidence_bundle"] = "unreadable import record"
         return out
     payload = {"spec": spec.to_dict(), "options": opts.to_dict()}
     job, _ = service.jobs.submit(KIND_TARGET, payload, revive_complete=True)  # reached only when the analysis cannot be served from local data
@@ -170,8 +196,9 @@ def investigation_status(service: DataService, job_id: str, spec: TargetSpec | N
     readiness = JOB_TO_READINESS.get(job["state"], Readiness.PREPARING)
     st = service._status(readiness, job)
     result = job["result"] or {}
-    if job["state"] is JobState.COMPLETE and result.get("saved_to") and Path(result["saved_to"]).is_file():
-        out = json.loads(Path(result["saved_to"]).read_text(encoding="utf-8"))
+    doc = saved_version(service, result.get("investigation_id"), result.get("saved_to")) if job["state"] is JobState.COMPLETE else None
+    if doc is not None:
+        out = doc
         out["data_status"] = {"readiness": "READY", "job_id": job_id, "manifest_id": result.get("manifest_id")}
         return out
     st["status"] = {"execution": "PREPARING_DATA" if readiness is Readiness.PREPARING else readiness.value, "test_status": None, "reason": st["message"]}

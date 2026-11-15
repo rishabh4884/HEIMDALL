@@ -173,7 +173,11 @@ class DataSource(ABC):
 
     @abstractmethod
     def check_access(self) -> AccessReport:
-        """Verify configuration, credentials and reachability, without retrieving data."""
+        """Verify configuration, credentials and reachability, without retrieving data.
+
+        Raises only access codes: CREDENTIALS_MISSING, AUTHENTICATION_FAILED, ACCESS_DENIED, ARCHIVE_UNREACHABLE, ARCHIVE_TIMEOUT. An HTTP
+        5xx (from the archive or a proxy) is ARCHIVE_UNREACHABLE with the status in the error detail. RETRIEVAL_FAILED belongs to item-level
+        discovery/retrieval failures, not to an access check."""
 
     @abstractmethod
     def discover(self, query: DiscoveryQuery) -> DiscoveryResult:

@@ -75,11 +75,16 @@ def urllib_transport(method: str, url: str, data: bytes | None, headers: dict[st
         with urllib.request.urlopen(request, timeout=timeout, context=_CONTEXT) as resp:
             return HttpResponse(status=resp.status, body=resp.read(), headers=dict(resp.headers))
     except urllib.error.HTTPError as exc:
+        # An HTTPError owns the response socket: read what is needed, then always close it (repeated 5xx/429 answers otherwise leak
+        # one open response each until garbage collection).
         try:
-            body = exc.read()
-        except OSError:
-            body = b""
-        return HttpResponse(status=exc.code, body=body, headers=dict(exc.headers or {}))
+            try:
+                body = exc.read()
+            except OSError:
+                body = b""
+            return HttpResponse(status=exc.code, body=body, headers=dict(exc.headers or {}))
+        finally:
+            exc.close()
     except (socket.timeout, TimeoutError) as exc:
         raise TransportTimeout(str(exc)) from None
     except urllib.error.URLError as exc:
@@ -162,6 +167,9 @@ class HttpClient:
                                         http_status=str(resp.status))
                 value = {k.lower(): v for k, v in resp.headers.items()}.get("retry-after", "")
                 retry_after = float(value) if value.strip().isdigit() else None
+                if retry_after is not None:  # carried to the durable job so its next attempt also respects the server
+                    last = HeimdallError.of(_RETRY_STATUS[resp.status], f"{host} returned HTTP {resp.status}", host=host,
+                                            http_status=str(resp.status), retry_after_s=str(int(retry_after)))
                 continue
             raise HeimdallError.of(ErrorCode.RETRIEVAL_FAILED, f"{host} returned HTTP {resp.status}", host=host,
                                    http_status=str(resp.status))

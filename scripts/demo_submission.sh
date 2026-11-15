@@ -4,18 +4,45 @@
 #   scripts/demo_submission.sh            # offline/cached demo + HTTP API
 #   scripts/demo_submission.sh --live     # also probe IRSA route health (bounded, ~1 min)
 #   scripts/demo_submission.sh --tests    # also run the full test suite (~70 s)
+#   scripts/demo_submission.sh --bundle B # fresh, isolated state: verify + import evidence bundle B (dir or .tar.gz), network disabled,
+#                                         # then replay and run one fresh measurement on the imported genuine products
 set -euo pipefail
 cd "$(dirname "$0")/.."
 PORT="${HEIMDALL_DEMO_PORT:-8797}"
-
-for arg in "$@"; do
-  case "$arg" in
+BUNDLE=""
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+  case "${args[$i]}" in
     --tests) echo "== tests"; python3 -W error -m unittest discover -s tests -t . 2>&1 | grep -v '^\[http\]' | tail -3 ;;
     --live)  echo "== live IRSA route health (each route reported separately; an outage is not a scientific result)"; python3 -m heimdall irsa-status || true ;;
+    --bundle) i=$((i + 1)); BUNDLE="${args[$i]:-}" ;;
   esac
 done
 
-export HEIMDALL_OFFLINE=1
+if [ -n "$BUNDLE" ]; then
+  FRESH="$(mktemp -d)"
+  export HEIMDALL_STATE_DIR="$FRESH/state" HEIMDALL_CACHE_DIR="$FRESH/cache"
+  # network disabled: offline mode plus an unroutable proxy, so any accidental request fails instead of reaching the internet
+  export HEIMDALL_OFFLINE=1 https_proxy="http://127.0.0.1:9" http_proxy="http://127.0.0.1:9" HTTPS_PROXY="http://127.0.0.1:9" HTTP_PROXY="http://127.0.0.1:9" \
+         NO_PROXY="127.0.0.1,localhost" no_proxy="127.0.0.1,localhost"  # only the local demo API is reachable
+  echo "== 0. fresh state $FRESH: verify and import the evidence bundle"
+  python3 -m heimdall evidence verify "$BUNDLE" | python3 -c 'import json,sys; d=json.load(sys.stdin); print("verify:", "OK" if d["ok"] else "FAILED", d["bundle_id"], d.get("files"), "files", d["problems"][:3])'
+  python3 -m heimdall evidence import "$BUNDLE" | python3 -c 'import json,sys; d=json.load(sys.stdin); print("imported", d["bundle_id"], "| products", d["products"], "| open jobs cancelled", len(d["open_jobs_cancelled"]))'
+fi
+
+# Prerequisites: the demo replays saved evidence; say exactly what is missing instead of failing mid-way.
+STATE="${HEIMDALL_STATE_DIR:-.heimdall/state}"
+missing=()
+for f in targets/NASA-01/latest.json targets/NASA-02/latest.json dataservice/service.sqlite3; do
+  [ -f "$STATE/$f" ] || missing+=("$STATE/$f")
+done
+if [ ${#missing[@]} -gt 0 ]; then
+  echo "demo prerequisites missing: ${missing[*]}" >&2
+  echo "  -> import an evidence bundle: scripts/demo_submission.sh --bundle <bundle dir or .tar.gz>" >&2
+  echo "  -> or export one from a machine that has the evidence: python3 -m heimdall evidence export <dir> --archive" >&2
+  exit 3
+fi
+
 echo "== 1. five NASA targets: saved status (execution / scientific test status)"
 python3 -m heimdall target list
 
@@ -58,6 +85,23 @@ import json, sys
 d = json.load(sys.stdin)["metrics"]
 print("jobs:", d["jobs"]["by_state"], "| store objects:", d["store"].get("objects"), "| worker:", d["worker"].get("running"))
 print("routes:", {k: (v["ok"], v["requests"]) for k, v in d["routes"].items()})'
+
+if [ -n "$BUNDLE" ]; then
+  echo "== 4b. fresh measurement on the imported genuine products (blind pipeline, offline), compared with the bundled run"
+  python3 -m heimdall investigate --source irsa-spherex --ra 150.1 --dec 2.2 --radius 0.05 --detectors 2 --cutout-size 0.1 --max-observations 4 \
+    --label "fresh-state measurement" --quiet | head -3
+  python3 - <<'PY'
+import json, os, pathlib
+runs = sorted(pathlib.Path(os.environ["HEIMDALL_STATE_DIR"], "runs").glob("R*/investigation.json"))
+docs = [json.loads(p.read_text()) for p in runs]
+new = [d for d in docs if d.get("request", {}).get("label") == "fresh-state measurement"][-1]
+old = [d for d in docs if d["run_id"] == "R20261115T085933-1cb9d31a"]
+print("fresh run", new["run_id"], "| origin", new["data_origin"], "| manifest", (new.get("input_manifest") or {}).get("manifest_id"),
+      "| detections", len(new.get("detections") or []))
+if old:
+    print("results_hash identical to the bundled run:", new["results_hash"] == old[0]["results_hash"])
+PY
+fi
 
 echo "== 5. HTTP API (offline) on 127.0.0.1:$PORT"
 python3 -m heimdall serve --port "$PORT" 2>/dev/null &

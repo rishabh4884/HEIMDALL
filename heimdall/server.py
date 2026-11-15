@@ -397,7 +397,11 @@ def make_handler(api: Api, token: str | None, cors_origin: str | None):
                 self._send(e.status, {"schema": HTTP_SCHEMA, "error": {"code": e.code, "message": e.message}})
             except HeimdallError as e:
                 code = getattr(getattr(e, "code", None), "value", "ERROR")
-                self._send(400 if code == "INPUT_INVALID" else 500, {"schema": HTTP_SCHEMA, "error": {"code": code, "message": str(e)}})
+                status = {"INPUT_INVALID": 400, "AUTHENTICATION_FAILED": 502, "ACCESS_DENIED": 502, "ARCHIVE_UNREACHABLE": 503,
+                          "ARCHIVE_TIMEOUT": 503, "RETRIEVAL_FAILED": 503}.get(code, 500)
+                detail = {k: str(v) for k, v in dict(e.info.detail).items() if k in ("classification", "http_status", "routes", "host", "offline")}
+                self._send(status, {"schema": HTTP_SCHEMA, "error": {"code": code, "message": e.info.message, "detail": detail,
+                                                                      "category": "UPSTREAM_OUTAGE" if status == 503 else "ERROR"}})
             except ValueError as e:
                 self._send(400, {"schema": HTTP_SCHEMA, "error": {"code": "INPUT_INVALID", "message": str(e)}})
             except Exception as e:  # noqa: BLE001 - a stable error body, never a stack trace to the client

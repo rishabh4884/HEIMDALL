@@ -975,3 +975,17 @@ class CancelAndRejectionTests(Base):
         self.assertIn("HTTP 422", j["progress"]["items"][rej[0]]["reason"])
         man = s.ensure_products(plan, region=REGION)
         self.assertEqual(man["readiness"], "READY")  # the manifest excludes the rejected product and lists it
+
+
+class RetryAfterTests(Base):
+    def test_a_server_retry_after_sets_the_jobs_next_attempt(self):
+        s = self.svc()
+
+        def discover(query):
+            raise HeimdallError.of(ErrorCode.RETRIEVAL_FAILED, "rate limited", http_status="429", retry_after_s="600")
+        self.archive.discover = discover
+        st = s.ensure_index(REGION)
+        s.tick()
+        j = s.describe_job(s.jobs.get(st["job"]["job_id"]))
+        self.assertEqual(j["state"], "PREPARING_DATA")
+        self.assertGreaterEqual(j["next_attempt_in_s"], 600 * 0.99 if self.cfg.backoff_cap_s >= 600 else self.cfg.backoff_cap_s * 0.99)

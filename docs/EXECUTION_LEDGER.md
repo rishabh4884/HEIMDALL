@@ -227,6 +227,29 @@ Live observations (UTC, evidence `.heimdall/verification/2026-11-15-submission/`
     the demo.
 - Tests: full suite 524 OK (5 live skipped); new `CancelAndRejectionTests`.
 
+## Run 2 (2026-11-15, from 15:27 IST): audit defects, contracts, all-sky inventory
+
+Start state: `main` = `origin/main` = `5ac6d2d`; identity `Rishabh Patel <rishabhjpatel@gmail.com>`; clean tree; worker pid 98970 running.
+
+The owner's independent audit reported:
+- 524 tests collected: 519 passed and 5 opt-in live tests skipped;
+- a separate live run: 2 passes, 2 failures, 1 error (reported, not re-run here).
+
+Schedule (Asia/Kolkata): defects A–D to about 16:00; frontend contracts to about 16:45; partitioned all-sky inventory to about 17:25;
+17:30–18:00 is verification only.
+
+### R2-M1 — audit defects A–D (this commit)
+
+| Defect | Reproduction | Fix | Regression evidence |
+|---|---|---|---|
+| A: incomplete artefact checks could pass the detection gate | Under the old code (`5ac6d2d`), NASA-02's saved result with a forced `MOTION_DETECTED_INCONSISTENT_WITH_CATALOGUE`, `blend_confusion` removed and `registration_artifact` set to `DISFAVOURED` gave `DETECTION` with the gate passing | Claims 1.2.0: every expected artefact hypothesis of the analysis (motion: `registration_artifact`, `blend_confusion`; variability: `calibration_artifact`, `blend_contamination`) must be accounted for. Missing, unknown, malformed, conflicting-duplicate or unassessed states count as unresolved; `NOT_APPLICABLE` counts as excluded only with a `not_applicable_reason`. Neighbouring checks were audited: assertive claims need evidence items; duplicate evidence ids fail; uncertainties must be finite and positive; an assertive motion claim needs measured track points; every observation used needs a product record | `ClaimGateAuditTests` (5) covering positive and rejection cases. All five saved targets give the same claim types as before |
+| B: the fresh-state demo failed without saved state | `scripts/demo_submission.sh` with an empty state directory | `heimdall/evidence.py` and CLI `evidence export\|verify\|import`: a checksummed portable bundle; import re-roots paths, prunes rows whose objects are absent and cancels open jobs. The demo gained `--bundle`, prerequisite checks (exit 3 with exact instructions) and a fresh measurement. Also fixed: store paths are now content-addressed from the store root (portable), and stored-result reuse is version-exact (it used to read `latest.json`, returning a newer version for an older key) | `tests/test_evidence.py` (2). Real bundle `evb:1f137a21a94c0c43`: 111 files, 88 MB, 19 genuine products, 3 manifests, kept outside Git. Fresh-state demo with the network disabled exits 0: NASA-01 labelled `STORED_RESULT_REPLAY` with the bundle id; a fresh blind run on the imported products has a results hash identical to the bundled run. A corrupted bundle is refused with nothing written; missing evidence exits 3 |
+| C: `check_access` raised `RETRIEVAL_FAILED` on 502s, which the contract forbids | Both routes returned 502 | `access_error()`: 401→`AUTHENTICATION_FAILED`, 403→`ACCESS_DENIED`, all timeouts→`ARCHIVE_TIMEOUT`, 5xx/connection/unexpected→`ARCHIVE_UNREACHABLE`; the `classification`, `http_status` and per-route detail are kept. The HTTP API maps outage codes to 503 with `category: UPSTREAM_OUTAGE`; discovery keeps `RETRIEVAL_FAILED` for item-level failures | `test_access_errors_follow_the_contract_and_keep_the_outage_classification` and `IrsaContractUnderOutageTests` (deterministic transport) |
+| D: HTTP error responses leaked resources | Real-socket test against a local server: 25×502 + 1×429 gave 26 `ResourceWarning`s (`Implicitly cleaning up <HTTPError 502>`) | `urllib_transport` closes the `HTTPError` on every path. Also, a server `Retry-After` now reaches the durable job's next attempt (bounded to 1 h) | `tests/test_http_transport.py` (0 leaks across error, 429, success and timeout); `RetryAfterTests` |
+
+Also fixed: stored products and calibrations are re-hashed when read for analysis, so a same-size corruption raises `DATA_MALFORMED`
+instead of being analysed. Full suite: 535 OK (5 live skipped).
+
 ## Integration record (D-007; approved by the owner on 2026-11-15)
 
 The full individual commit history is kept; nothing is squashed. Steps and verification:
