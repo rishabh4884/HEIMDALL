@@ -19,7 +19,7 @@ Historical requirements from earlier conversations that are not in the repositor
 | S-09 | Mirror capability | deferred | prefetch mode exists (`data prefetch`) | mirror planning/capacity estimate needs measured product sizes per collection |
 | S-10 | Integrity and reproducibility | implemented | content-addressed store, SHA-256 + FITS checks, frozen manifests, `latest_attempt.json` vs `latest.json` | manifest-read enforcement during analysis is by construction (`LocalStoreSource`), not audited per read |
 | S-11 | SPHEREx fidelity, all six detectors | partial | `docs/SPHEREX_FIDELITY.md` | per-detector validation campaign deferred |
-| S-12 | First-class comparability record | partial | REQ-005 (exclusion reasons, series construction) | `COMPARABLE/…/NOT_COMPARABLE` per-pair object deferred |
+| S-12 | First-class comparability record | partial | per-series record `COMPARABLE / COMPARABLE_WITH_LIMITATIONS / NOT_COMPARABLE` with sampling, passband, processing versions, registration, PSF, noise model, blending, pixel flags, saturation (`target_variability` 1.2.0); `NOT_COMPARABLE` series cannot produce change significance; epoch comparisons carry a status | motion per-image pairs still use exclusion reasons; no PSF matching or background-treatment record |
 | S-13 | Detection families | partial | REQ-007..011 | morphology, deblending, period search deferred |
 | S-14 | Multidimensional pattern model | partial | REQ-012 | deferred |
 | S-15 | Hypothesis-driven follow-up loop | partial | REQ-015 (hypotheses + next step text) | automated acquisition loop deferred; thermal inference blocked (REQ-016: needs model grid, passband integration, absolute calibration) |

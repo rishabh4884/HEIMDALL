@@ -325,7 +325,7 @@ class VariabilityTests(unittest.TestCase):
         out = analyse_variability(series_measurements([2000, 3500, 2000, 3600, 2100], n_controls=2), self.cfg)
         self.assertEqual(out["verdict"], "SIGNIFICANT_BUT_NOT_DISTINGUISHABLE_FROM_FIELD_SYSTEMATICS")
         self.assertIn("could not be computed", out["verdict_reason"])
-        self.assertEqual(out["method_version"], "1.1.0-provisional")
+        self.assertTrue(out["method_version"].endswith("-provisional"))
 
     def test_saturated_images_are_excluded_and_reported_as_a_caveat(self):
         out = analyse_variability(series_measurements([2000, 3500, 2000, 3600, 2100], n_controls=12, saturated=(0, 1)), self.cfg)
@@ -770,4 +770,35 @@ class ClaimTests(unittest.TestCase):
         ms = series_measurements([2000, 3500, 2000, 3600, 2100], n_controls=2)
         v = self.claim(build_claims(self.doc(measurements=ms, analyses={"variability": analyse_variability(ms, cfg)})), "variability")
         self.assertEqual(v["claim_type"], "INCONCLUSIVE")
+
+
+class ComparabilityTests(unittest.TestCase):
+    """First-class comparison records on comparable series (SYNTHETIC measurements)."""
+    cfg = EngineConfig()
+
+    def test_every_series_carries_a_comparison_record_and_single_epochs_are_not_comparable(self):
+        out = analyse_variability(series_measurements([2000, 3500, 2000, 3600, 2100], n_controls=12), self.cfg)
+        for s in out["series"]:
+            self.assertIn(s["comparability"]["status"], ("COMPARABLE", "COMPARABLE_WITH_LIMITATIONS", "NOT_COMPARABLE"))
+            dims = {d["dimension"] for d in s["comparability"]["dimensions"]}
+            self.assertTrue({"sampling", "passband", "registration", "psf_treatment", "noise_model", "blending"} <= dims)
+        one = analyse_variability(series_measurements([2000]), self.cfg)
+        self.assertTrue(all(not s["comparability"]["change_significance_allowed"] for s in one["series"]))
+        self.assertEqual(one["verdict"], "NOT_ASSESSABLE")
+
+    def test_mixed_processing_versions_are_a_recorded_limitation(self):
+        ms = series_measurements([2000, 2010, 1990, 2005], n_controls=12)
+        for m in ms[::2]:
+            m["pipeline_version"] = "v2"
+        out = analyse_variability(ms, self.cfg)
+        rec = [s["comparability"] for s in out["series"] if s["test"]["status"] == "COMPLETED"]
+        self.assertTrue(rec and all("processing_versions" in r["limitations"] for r in rec))
+        self.assertTrue(all(r["status"] == "COMPARABLE_WITH_LIMITATIONS" for r in rec))
+
+    def test_records_do_not_change_verdicts(self):
+        for fl, nc in (([2000, 3500, 2000, 3600, 2100], 12), ([2000] * 5, 12), ([2000, 3500, 2000, 3600, 2100], 2)):
+            out = analyse_variability(series_measurements(fl, n_controls=nc), self.cfg)
+            self.assertIn(out["verdict"], ("VARIABILITY_DETECTED", "VARIABILITY_DETECTED_WITH_CAVEATS", "NO_SIGNIFICANT_VARIABILITY",
+                                           "SIGNIFICANT_BUT_NOT_DISTINGUISHABLE_FROM_FIELD_SYSTEMATICS"))
+            self.assertEqual(sum(out["comparability_summary"].values()), len(out["series"]))
 

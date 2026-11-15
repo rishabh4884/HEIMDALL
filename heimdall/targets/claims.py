@@ -135,10 +135,13 @@ def _variability_claim(result: dict, v: dict, base: dict) -> dict:
         t = best["test"]
         values.append({"name": "strongest_series_departure_from_constant", "series_id": best["series_id"], "value": t.get("sigma_equivalent"),
                        "unit": "sigma (formal)", "chi2": t.get("chi2"), "dof": t.get("dof"), "empirical_false_alarm_fraction": t.get("empirical_false_alarm_fraction"),
-                       "wavelength_um": best.get("wavelength_um"), "n_points": best.get("n_points"), "origin": "MEASURED"})
+                       "wavelength_um": best.get("wavelength_um"), "n_points": best.get("n_points"), "origin": "MEASURED",
+                       "comparability": (best.get("comparability") or {}).get("status"),
+                       "comparability_limitations": (best.get("comparability") or {}).get("limitations")})
     ref = (v.get("control_reference") or {})
     n_ctl = ref.get("n_control_series_completed") or 0
-    comp_ok = ctype not in ("DETECTION", "CONSISTENT_WITH") or (best is not None and best["test"].get("empirical_false_alarm_fraction") is not None)
+    comp_ok = ctype not in ("DETECTION", "CONSISTENT_WITH") or (best is not None and best["test"].get("empirical_false_alarm_fraction") is not None
+                                                               and (best.get("comparability") or {}).get("status", "COMPARABLE") != "NOT_COMPARABLE")
     comp = (comp_ok, f"{n_ctl} completed control series; empirical false-alarm fraction "
             + ("computed" if best is not None and best["test"].get("empirical_false_alarm_fraction") is not None else "not computed"))
     claim = base | {"analysis": "variability", "claim_type": ctype, "statement": statement, "values": values,

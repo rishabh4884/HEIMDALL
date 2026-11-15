@@ -36,7 +36,7 @@ MIN_EPOCHS_FOR_TREND = 3
 MIN_EPOCHS_FOR_PERIOD = 6  # and a baseline of at least two cycles of any candidate period
 CONTAMINATION_RATIO_LIMIT = 0.1
 MIN_CONTROL_SERIES = 5  # completed control series needed before an empirical false-alarm fraction is computed
-METHOD_VERSION = "1.1.0-provisional"
+METHOD_VERSION = "1.2.0-provisional"  # 1.2.0: per-series comparison records (no verdict change)
 
 
 def _point(m: dict, epoch_of: dict[str, int], gaia: str | None = None) -> tuple[SeriesPoint | None, dict | None]:
@@ -80,6 +80,45 @@ def _series_summary(s: ComparableSeries, r: VariabilityResult | None, scale: flo
                      "max_abs_pull": r.max_abs_pull, "leave_one_out_sigma": r.leave_one_out.sigma_equivalent if r.leave_one_out else None,
                      "error_scale_applied": scale}
     return d
+
+
+PSF_FWHM_SPREAD_LIMIT = 0.2  # fractional spread of PSF FWHM within a series above which PSF treatment is a stated limitation
+
+
+def series_comparability(s: ComparableSeries, meas_by_obs: dict[str, dict], err: dict, tolerance_fraction: float) -> dict:
+    """First-class comparison record for one comparable series: ``COMPARABLE``, ``COMPARABLE_WITH_LIMITATIONS`` or ``NOT_COMPARABLE``.
+
+    Each dimension is recorded with its evidence. ``NOT_COMPARABLE`` (fewer than 3 points or 2 epochs) means no change significance may be
+    computed from the series; limitations are carried into the verdict's caveats, never silently ignored."""
+    ms = [meas_by_obs.get(p.obs_id, {}) for p in s.points]
+    def dim(name, status, detail, **extra):
+        return {"dimension": name, "status": status, "detail": detail, **extra}
+    fwhm = [m.get("psf_fwhm_arcsec") for m in ms if m.get("psf_fwhm_arcsec")]
+    spread = (max(fwhm) - min(fwhm)) / float(np.median(fwhm)) if len(fwhm) >= 2 else 0.0
+    regs = [((m.get("registration") or {}).get("status")) for m in ms]
+    blends = [c for m in ms for c in m.get("contamination") or [] if c.get("optical_flux_ratio_to_target", 0) >= CONTAMINATION_RATIO_LIMIT]
+    flagged = [p.obs_id for p in s.points if p.peak_flags]
+    dims = [
+        dim("sampling", "OK" if len(s.points) >= 3 and s.n_epochs >= 2 else "NOT_COMPARABLE",
+            f"{len(s.points)} points over {s.n_epochs} epochs (minimum 3 points, 2 epochs)"),
+        dim("passband", "OK", f"single detector {s.detector}, release {s.release}; wavelength span {s.wavelength_span_um:.4f} um within "
+            f"{tolerance_fraction} x bandwidth ({s.tolerance_um:.4f} um)"),
+        dim("processing_versions", "OK" if len(s.pipeline_versions) <= 1 else "LIMITATION", f"pipeline versions {s.pipeline_versions}"),
+        dim("registration", "OK" if regs and all(r == "ESTIMATED" for r in regs) else "LIMITATION",
+            f"control-star registration per image: {sorted({str(r) for r in regs})}"),
+        dim("psf_treatment", "OK" if spread <= PSF_FWHM_SPREAD_LIMIT else "LIMITATION",
+            f"PSF FWHM spread {spread:.2f} (limit {PSF_FWHM_SPREAD_LIMIT}) over {len(fwhm)} images" if fwhm else "PSF FWHM not recorded",
+            fwhm_arcsec=[round(f, 3) for f in fwhm]),
+        dim("noise_model", "OK" if err.get("status") == "COMPLETED" else "LIMITATION",
+            "field error scale estimated from control stars" if err.get("status") == "COMPLETED" else f"formal errors only ({err.get('reason')})"),
+        dim("blending", "OK" if not blends else "LIMITATION", f"{len(blends)} neighbour(s) with optical flux ratio >= {CONTAMINATION_RATIO_LIMIT} in the PSF stamp"),
+        dim("pixel_flags", "OK" if not flagged else "LIMITATION", f"{len(flagged)} point(s) with flags at the peak pixel", obs_ids=flagged),
+        dim("saturation", "OK", "saturated or non-linear images are excluded before series construction"),
+    ]
+    status = ("NOT_COMPARABLE" if any(d["status"] == "NOT_COMPARABLE" for d in dims)
+              else "COMPARABLE_WITH_LIMITATIONS" if any(d["status"] == "LIMITATION" for d in dims) else "COMPARABLE")
+    return {"status": status, "dimensions": dims, "limitations": [d["dimension"] for d in dims if d["status"] == "LIMITATION"],
+            "change_significance_allowed": status != "NOT_COMPARABLE"}
 
 
 def _trend(s: ComparableSeries, scale: float) -> dict:
@@ -146,16 +185,19 @@ def analyse_variability(measurements: list[dict], cfg: EngineConfig, *, extra_ca
         tgt_scaled.append(q)
     series = build_series(tgt_scaled, cfg.temporal.wavelength_tolerance_fraction, "TGT")
     series_out, results = [], []
+    meas_by_obs = {m["obs_id"]: m for m in meas}
     for s in series:
         r = variability_test(s, cfg.temporal)
         results.append(r)
         d = _series_summary(s, r, scale)
+        d["comparability"] = series_comparability(s, meas_by_obs, err, cfg.temporal.wavelength_tolerance_fraction)
         if r.status == "COMPLETED" and r.dof and len(ctl_ratio) >= MIN_CONTROL_SERIES:
             d["test"]["empirical_false_alarm_fraction"] = float(np.mean(ctl_ratio >= r.chi2 / r.dof))
             d["test"]["n_control_series"] = int(len(ctl_ratio))
         d["trend"] = _trend(s, scale)
         series_out.append(d)
-    completed = [d for d in series_out if d["test"]["status"] == "COMPLETED"]
+    # Invalid comparisons never produce change significance: only series whose comparison record allows it enter the verdict.
+    completed = [d for d in series_out if d["test"]["status"] == "COMPLETED" and d["comparability"]["change_significance_allowed"]]
     # Cross-epoch spectral comparison (bands matched by wavelength, never by time alone).
     by_epoch: dict[int, list[SeriesPoint]] = defaultdict(list)
     for p in tgt_scaled:
@@ -166,6 +208,8 @@ def analyse_variability(measurements: list[dict], cfg: EngineConfig, *, extra_ca
     for a, b in zip(keys, keys[1:]):
         c = compare_point_sets(f"epoch {a} vs {b}", by_epoch[a], by_epoch[b], cfg.temporal.wavelength_tolerance_fraction)
         comps.append({"label": c.label, "status": c.status, "reasons": c.reasons, "n_pairs": c.n_pairs,
+                      "comparability": "NOT_COMPARABLE" if c.status != "COMPLETED" or not c.n_pairs else "COMPARABLE_WITH_LIMITATIONS",
+                      "comparability_note": "matched bands from different epochs (non-simultaneous; same detector/wavelength tolerance)",
                       "sigma_equivalent": c.significance.sigma_equivalent if c.significance else None,
                       "pairs": c.pairs[:12]})
     spectrum = assemble_spectrum("target", [p for p in tgt_scaled if p.usable])
@@ -213,6 +257,8 @@ def analyse_variability(measurements: list[dict], cfg: EngineConfig, *, extra_ca
                                   "median_reduced_chi2": float(np.median(ctl_ratio)) if len(ctl_ratio) else None},
             "period_assessment": period_assessment(len(epochs), baseline, sum(p.usable for p in pts)),
             "caveats": caveats,
+            "comparability_summary": {k: sum(1 for d in series_out if d["comparability"]["status"] == k)
+                                      for k in ("COMPARABLE", "COMPARABLE_WITH_LIMITATIONS", "NOT_COMPARABLE")},
             "light_curve": [{"obs_id": p.obs_id, "mjd": p.mjd, "wavelength_um": p.wavelength_um, "detector": p.detector, "flux_ujy": p.flux_ujy,
                              "flux_sigma_ujy": p.flux_sigma_ujy, "usable": p.usable, "reasons": p.reasons, "flags": p.peak_flags,
                              "epoch_index": p.epoch_index} for p in pts],

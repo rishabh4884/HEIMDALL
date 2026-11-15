@@ -130,6 +130,24 @@ Live observations (UTC, evidence `.heimdall/verification/2026-11-15-submission/`
   - plus this ledger commit
 - No CI exists in the repository. `main` is unchanged at `462c8b4`.
 
+### M6–M8 (post-submission-core, master-spec continuation; commits `80ddc0a`, `cbb381c`, this commit)
+
+- M6 `80ddc0a`: worker scheduling filtered in SQL, plus indexes on `jobs(state)` and `job_events(job_id, seq)`.
+  - The indexes are additive (`IF NOT EXISTS`, no schema-version change).
+  - Verified on a disposable copy of the live database: about 0.03 ms per wake.
+  - With 5000 finished jobs the per-wake cost is unchanged (test).
+- M7 `cbb381c`: `heimdall/targets/claims.py`, contract `heimdall.claims/1.0` (REQ-031).
+  - Each claim has a claim type and runs an 8-check defensibility gate; a failed check downgrades the claim.
+  - Exposed through the API (`/targets/{id}/claims`, `/investigations/{id}/claims`) and the CLI (`target claims`).
+  - Applied to all five saved targets: NASA-02 motion is `CONSISTENT_WITH` with all checks passing. Every other analysis claim is
+    `NOT_ASSESSABLE` or `INCONCLUSIVE`, alongside `MEASUREMENT` claims for the forced photometry.
+- M8 (this commit): first-class per-series comparison records (`target_variability` 1.2.0, REQ-005, S-12).
+  - `NOT_COMPARABLE` series are excluded from the verdict.
+  - The claims carry the record of their series.
+  - Re-running variability on every saved target's measurements reproduces each saved verdict exactly (no rule change). On NASA-02
+    the strongest series is `COMPARABLE_WITH_LIMITATIONS` (noise model, pixel flags), and its other 11 series are `NOT_COMPARABLE`.
+- Tests: full suite 507 OK (5 live skipped).
+
 ## Integration plan (D-007, revised; pending, not executed)
 
 No squash. No rewrite, force-push or merge until the owner explicitly approves the verified plan.
