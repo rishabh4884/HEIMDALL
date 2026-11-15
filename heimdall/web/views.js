@@ -155,7 +155,9 @@ export function deeperPage(state) {
       ${list(p?.missing).length ? para(`Missing dimensions: ${p.missing.map((m) => `${m.dimension}${m.reason ? ` (${m.reason})` : ""}`).join("; ")}.`) : ""}
       ${para(p?.cross_dimension?.note)}`)}
     ${state.record?.kind !== "run" && (doc.target?.target_id || "").startsWith("NASA-") ? group("Follow-up plan", stack([action("Open discriminating follow-up actions", "followup", doc.target.target_id, "Hypotheses distinguished, cost, budget, stopping reason")])) : ""}
-    ${group("Composition and thermal interpretation", para("Not available: no validated model grids, cross-detector calibration or band integration exist in the backend (docs/THERMAL_REFERENCE_FEASIBILITY.md)."))}`;
+    ${group("Not available in this backend", list(state.capabilities?.not_available).length
+      ? table(["Analysis", "State", "Why"], state.capabilities.not_available.map((n) => [h(label(n.id)), h(label(n.state)), h(n.reason)]))
+      : para("Capabilities could not be loaded. Composition and thermal interpretation, period search and cross-detector stacking are not offered without them."))}`;
 }
 
 export function historyPage(state) {

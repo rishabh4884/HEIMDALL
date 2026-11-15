@@ -306,6 +306,23 @@ try {
     await evaluate(`document.querySelector("#close-dialog").click()`);
     return "ok";
   });
+  await check("worker/offline banner and run options follow /health and /capabilities", async () => {
+    const health = await (await fetch(`${BASE}/api/v1/health`)).json();
+    await go("/?target=NASA-04");
+    const banner = await text("#worker-banner");
+    if (health.offline) assert(banner.includes("Offline mode"), `offline banner missing: ${banner}`);
+    else if (!health.worker?.running) assert(banner.includes("No data worker"), "absent-worker banner missing");
+    else assert(!banner, "banner shown while a worker runs");
+    await click("#open-field");
+    await waitFor(`document.querySelector('#region-form input[value="field"]')`);
+    const disabled = await evaluate(`return [...document.querySelectorAll('#region-form input[name="intent"]')].filter(i => i.disabled).length`);
+    if (health.offline) assert((await text("#dialog-content")).includes("Offline mode"), "offline note missing in run dialog");
+    await evaluate(`document.querySelector("#close-dialog").click()`);
+    await evaluate(`document.querySelector('[data-tab="deeper"]').click()`);
+    await waitFor(`document.querySelector("#record").textContent.includes("Not available in this backend")`);
+    assert((await text("#record")).includes("Period search"), "not_available capabilities not listed");
+    return `${health.offline ? "offline" : "online"}, worker ${health.worker?.running ? "running" : "absent"}, ${disabled} disabled options`;
+  });
   await check("guided tour is skippable and opens real records", async () => {
     await click("#show-guide");
     await waitFor(`document.querySelector("[data-tour-go]")`);

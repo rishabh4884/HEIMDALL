@@ -18,11 +18,12 @@ Status vocabulary:
 
 | Evidence | Command | Result |
 |---|---|---|
-| Browser workflows (real UI, real API, real saved data) | `python3 -m heimdall serve --port 8777` then `node scripts/browser_check.mjs --base http://127.0.0.1:8777` | 23/23 checks; 0 console errors or uncaught exceptions |
+| Browser workflows (real UI, real API, real saved data) | `python3 -m heimdall serve --port 8777` then `node scripts/browser_check.mjs --base http://127.0.0.1:8777` | 24/24 checks against an online server (port 8777) and 24/24 against an offline-mode server (`HEIMDALL_OFFLINE=1`, port 8778); 0 console errors or uncaught exceptions |
 | Frontend pure modules | `node --test tests/test_frontend_modules.mjs tests/test_hips.mjs` | 17/17 |
 | Twin-view pair endpoint and module serving | `python3 -W error -m unittest tests.test_web_pair` | 5/5. Synthetic fixtures; includes a 25° detector rotation that aligns after resampling |
 | Full backend suite | `python3 -W error -m unittest discover -s tests -t .` | 577 passed, 5 opt-in live tests skipped |
 | Pan responsiveness | browser check "pan responsiveness" | See the measurement below |
+| Absent worker and empty state | throwaway empty state, no worker | Absent-worker banner shown; a NASA-02 link explains the missing record and keeps the view; library shows "No saved result" |
 
 **Pan responsiveness measurement**
 - Setup: macOS on Apple Silicon, headless Chrome, 1440×1000 viewport, NASA-02 field with the DR1 survey layer on.
@@ -61,9 +62,9 @@ The browser checks run against real saved records:
 | F17 Context kept across band, time and view changes | Complete | Separate slices for record, camera, plane, filters, selection, frame and compare | Browser: plane and epoch changes keep record, camera and selection | — |
 | F18 Share and reopen exact context | Complete | `state.serialize/parse` (record, camera, plane, layers, filters, selection, epoch, tab, compare, twin pair, separate) | Unit round-trip; credential parameters ignored; browser: an invalid link keeps plane and camera and explains the missing record | Reopening needs a server holding the same data, which the UI states |
 | F19 Durable jobs | Complete (unit) / Partial (live) | `jobs.js`: 3 s cadence, 5 s back-off, dormant during auto-recovery, paused while hidden, ids survive reload, never resubmits | Unit tests with fake timers; browser jobs dialog lists server jobs without a POST | A live preparation → reload → completion run in the browser was not exercised: IRSA discovery was down today and the shared state has a worker |
-| F20 Capability-aware controls | Partial | Data status renders `/capabilities` (per detector, analyses, not-available reasons); *Region & run* shows limits; worker banner | Browser: NOT_VALIDATED is rendered | **Next:** disable individual run options from `capabilities.not_available` |
+| F20 Capability-aware controls | Complete | *Region & run* offers only analyses declared in `/capabilities` (others disabled with the reason); *Deeper dive* lists `not_available` with reasons; worker and offline notes in the run dialog; Data status shows per-detector validation | Browser: capability check on online and offline servers | — |
 | F21 Follow-up plans and budgets | Complete | `views.followupView` (distinguishes, predictions, cost, expected value, availability reason, budget, stopping reason; run once via `POST /followup/{id}/run`) | NASA-02 plan rendered with its stopping reason | — |
-| F22 Cached and offline operation | Partial | Offline banner from `/health`; imagery status explains offline; cached records stay readable | — | **Next:** a browser run with `HEIMDALL_OFFLINE=1` on a bundle-imported state |
+| F22 Cached and offline operation | Complete | Offline banner from `/health`; offline note in the run dialog; imagery status explains offline; cached records stay readable | Full browser run (24/24) against `HEIMDALL_OFFLINE=1` on the saved state | The offline run used the saved state, not a fresh bundle import (the backend demo already covers that, `scripts/demo_submission.sh --bundle`) |
 | F23 Metadata vs downloaded vs used coverage | Complete | Coverage page and inventory banner state that indexed ≠ downloaded ≠ analysed; all-sky completeness is never claimed | Browser: coverage page text | — |
 | F24 Guided discovery | Complete (decision FD-3) | Six-step tour on real records; skippable, replayable, every step optional | Browser: skip closes; "Show me" opens NASA-02 | — |
 | F25 Interruptible data-driven demonstration | Partial | Tour plus real-epoch playback (interruptible, reduced motion) | — | No automatic cinematic sequence; the original specification was not recovered |
@@ -108,6 +109,10 @@ The browser checks run against real saved records:
 | Large-dataset stress test and virtualized tables | Code and validation | Very large runs may render slowly |
 | Pre-existing: `tests` demo writes synthetic runs into the default `.heimdall/state` | Test isolation | Synthetic runs accumulate in the library; they are watermarked |
 
-## Commits
+## Commits (branch `main`, pushed to `origin`)
 
-Recorded after each push: see the section below.
+| Commit | Feature IDs | Verification |
+|---|---|---|
+| `2510f8e` Add co-registered product pair endpoint for twin image views | F07 (transport), FD-5 | `tests.test_web_pair` plus workbench and server tests in an isolated worktree (44 OK); full suite 577 OK |
+| `8e3cdb2` Integrate the sky, wavelength, time, image comparison and evidence workbench | F01–F19, F21, F23–F26, F28–F32 | 23/23 browser workflows; 17/17 node; full suite 577 OK (5 skipped) |
+| this commit: capability-gated run options; offline and absent-worker verification | F20, F22 | 24/24 browser online and offline; empty-state check |

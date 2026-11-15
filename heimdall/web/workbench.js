@@ -771,17 +771,21 @@ function regionDialog(category = "field") {
   const f = state.record?.kind === "field" ? state.record.field : fieldCenter() || { ra: v.ra, dec: v.dec, radius: .05 };
   const caps = list(state.capabilities?.analyses);
   const fieldCap = caps.find((a) => a.id === "field_run");
-  const workerWarn = state.health && !state.health.worker?.running ? `<p class="notice compact">No worker is running: a queued run will wait until one starts. Saved results stay available.</p>` : "";
+  const workerWarn = (state.health?.offline ? `<p class="notice compact">Offline mode: nothing is fetched. Coverage reads only the existing index; a new run is queued and waits for network access.</p>` : "")
+    + (state.health && !state.health.worker?.running ? `<p class="notice compact">No worker is running: a queued run will wait until one starts. Saved results stay available.</p>` : "");
+  // Offer only what the backend declares (GET /capabilities); an absent capability is shown disabled with the reason.
+  const has = (id) => !state.capabilities || caps.some((a) => a.id === id);
+  const opt = (value, text, capId) => `<label class="inline"><input type="radio" name="intent" value="${value}" ${category === value && has(capId) ? "checked" : ""} ${has(capId) ? "" : "disabled"}> ${text}${has(capId) ? "" : " <small>(not offered by this server)</small>"}</label>`;
   openDialog("Region & run", `<form id="region-form" novalidate>
     <p class="compact">ICRS decimal degrees, or paste "h:m:s d:m:s" into the position box.</p>
     <label>Position <input name="pos" value="${number(f.ra, 5)} ${number(f.dec, 5)}" aria-describedby="pos-error" required></label><p id="pos-error" class="field-error" role="alert"></p>
     <label>Radius (°) <input name="radius" type="number" min="0.005" max="0.5" step="any" value="${number(Math.min(.5, Math.max(.005, f.radius || .05)), 4)}" aria-describedby="radius-error" required></label><p id="radius-error" class="field-error" role="alert"></p>
     <fieldset><legend>Action</legend>
-      <label class="inline"><input type="radio" name="intent" value="coverage" ${category === "coverage" ? "checked" : ""}> Browse coverage (metadata only; never analysis)</label>
+      ${opt("coverage", "Browse coverage (metadata only; never analysis)", "coverage")}
       <label class="inline"><input type="radio" name="intent" value="select" ${category === "select" ? "checked" : ""}> Select plotted records within the radius</label>
-      <label class="inline"><input type="radio" name="intent" value="field" ${category === "field" ? "checked" : ""}> Run a blind field investigation</label>
-      <label class="inline"><input type="radio" name="intent" value="MOVING_OBJECT" ${category === "MOVING_OBJECT" ? "checked" : ""}> Run a motion test at this position</label>
-      <label class="inline"><input type="radio" name="intent" value="VARIABLE_STAR" ${category === "VARIABLE_STAR" ? "checked" : ""}> Run a variability test at this position</label>
+      ${opt("field", "Run a blind field investigation", "field_run")}
+      ${opt("MOVING_OBJECT", "Run a motion test at this position", "target_investigation")}
+      ${opt("VARIABLE_STAR", "Run a variability test at this position", "target_investigation")}
     </fieldset>
     <p class="compact">Runs are explicit and durable: an identical saved result returns at once (200); otherwise a job is queued (202) and may download cutouts. ${fieldCap?.limits ? `Field limits: ${h(JSON.stringify(fieldCap.limits))}.` : "Field radius ≤ 0.5°, up to 32 observations."} Coordinate tests use the engine's defaults (up to 64 observations).</p>
     ${workerWarn}
