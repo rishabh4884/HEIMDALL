@@ -51,6 +51,7 @@ class DataService:
         self.source = source
         self.offline = offline or source is None
         self.handlers = dict(handlers or {})  # extension job kinds (e.g. TARGET_INVESTIGATION), registered by higher layers
+        self._in_worker = False  # True while run_job executes: submissions made then come from a dependent job, not a user
 
     def close(self) -> None:
         self.db.close()
@@ -106,7 +107,7 @@ class DataService:
         return {"manifest_id": manifest_id, **json.loads(r["body"])} if r else None
 
     # ================================================================ requests ====
-    def ensure_index(self, region: RegionSpec, *, wait_s: float = 0.0) -> dict:
+    def ensure_index(self, region: RegionSpec, *, wait_s: float = 0.0, revive: bool = True) -> dict:
         """Status of the region index. Indexed -> immediate (a stale index also queues a background refresh). Otherwise a durable INDEX job."""
         region.validate()
         st = self.index_status(region)
@@ -118,13 +119,14 @@ class DataService:
             readiness = Readiness.READY if n else Readiness.NO_COVERAGE
             return self._status(readiness, job=None, extra={"index": st, "refresh_job": refresh["job_id"] if refresh else None,
                                                             "as_of": st["completed_at"], "from_local_inventory": True})
-        job, _ = self.jobs.submit(KIND_INDEX, {"region": region.to_dict(), "scope": self.cfg.scope}, revive_complete=True)
+        job, _ = self.jobs.submit(KIND_INDEX, {"region": region.to_dict(), "scope": self.cfg.scope}, revive_complete=True, revive_terminal=revive,
+                                  internal=self._in_worker)
         return self._wait_and_status(job, wait_s, region=region)
 
     def coverage(self, region: RegionSpec, *, offset: int = 0, limit: int = 500, wait_s: float = 0.0) -> dict:
         """Readiness-first coverage for map browsing: observations from the local inventory when the region is indexed (with the index
         time), otherwise a durable INDEX job (no analysis is ever started). Pagination bounds the response."""
-        st = self.ensure_index(region, wait_s=wait_s)
+        st = self.ensure_index(region, wait_s=wait_s, revive=False)  # browsing never revives a deadline-expired or cancelled index job
         obs = self.observations(region)
         if obs is None:
             return st | {"observations": None, "note": "region not indexed yet; this is not 'no observations'"}
@@ -163,7 +165,7 @@ class DataService:
         man = self._manifest_if_ready(plan, region, request, payload)
         if man is not None:
             return self._status(Readiness.READY, job=None, extra={"manifest_id": man["manifest_id"], "from_local_store": True, "excluded_quarantined": man["excluded_quarantined"]})
-        job, _ = self.jobs.submit(KIND_ACQUIRE, payload, revive_complete=True)  # reached only when products are actually missing
+        job, _ = self.jobs.submit(KIND_ACQUIRE, payload, revive_complete=True, internal=self._in_worker)  # reached only when products are actually missing
         return self._wait_and_status(job, wait_s, plan=plan, region=region, request=request, payload=payload)
 
     def _prefetch_step(self, region: RegionSpec, cutout_size_deg: float | None, max_observations: int) -> dict:
@@ -223,7 +225,8 @@ class DataService:
         terminal = {Readiness.NO_COVERAGE.value: JobState.NO_COVERAGE, Readiness.UNAVAILABLE_AFTER_DEADLINE.value: JobState.UNAVAILABLE_AFTER_DEADLINE,
                     Readiness.INVALID_SOURCE_DATA.value: JobState.INVALID_SOURCE_DATA, Readiness.CANCELLED.value: JobState.CANCELLED}.get(st)
         if terminal is None:
-            return self.jobs.schedule_retry(self.jobs.get(jid), error={"code": "UNKNOWN", "message": str(step)}, reason="retrying automatically")
+            return self.jobs.schedule_retry(self.jobs.get(jid), error={"code": "UNKNOWN", "message": str(step)}, reason="retrying automatically",
+                                            progress={"waiting_on": "retry"})
         return self.jobs.transition(jid, terminal, reason=step.get("detail", ""), progress={"child_job": step.get("child")})
 
     def _wait_and_status(self, job: dict, wait_s: float, **ctx) -> dict:
@@ -383,6 +386,14 @@ class DataService:
         if not (job["state"] is JobState.PREPARING_DATA and (job["progress"] or {}).get("child_job")):
             self.jobs.record_attempt(job_id)
         job = self.jobs.get(job_id)
+        self._in_worker = True
+        try:
+            return self._dispatch(job, budget_s)
+        finally:
+            self._in_worker = False
+
+    def _dispatch(self, job: dict, budget_s: float | None) -> dict:
+        job_id = job["job_id"]
         if job["kind"] == KIND_INDEX:
             return self._run_index(job)
         if job["kind"] == KIND_ACQUIRE:

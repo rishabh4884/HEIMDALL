@@ -106,6 +106,24 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.err("GET", "/elsewhere").status, 404)
 
 
+class HardeningTests(ApiTests):
+    def test_ra_rounding_edge_and_coverage_snapping(self):
+        code, _ = self.call("POST", "/api/v1/investigations", body={"ra": -1e-20, "dec": 0.0, "category": "VARIABLE_STAR"})
+        self.assertEqual(code, 202)
+        a = self.call("GET", "/api/v1/coverage", {"ra": ["10.00001"], "dec": ["-5.00002"], "radius": ["0.05"]})[1]
+        b = self.call("GET", "/api/v1/coverage", {"ra": ["10.00003"], "dec": ["-5.00001"], "radius": ["0.05"]})[1]
+        self.assertEqual(a["job"]["job_id"], b["job"]["job_id"])  # nearby pans share one index job
+        q = a["queried_cone"]
+        self.assertGreaterEqual(q["radius_deg"], 0.05)
+
+    def test_corrupt_saved_record_is_a_server_error(self):
+        d = Path(self.engine.settings.state_dir) / "targets" / "NASA-01"
+        d.mkdir(parents=True)
+        (d / "latest.json").write_text("{truncated")
+        e = self.err("GET", "/api/v1/targets/NASA-01")
+        self.assertEqual((e.status, e.code), (500, "RECORD_UNREADABLE"))
+
+
 class SocketTests(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
@@ -144,6 +162,19 @@ class SocketTests(unittest.TestCase):
         code, body, _ = self._req(base + "/api/v1/investigations", data=json.dumps({"target_id": "NASA-05"}).encode())
         self.assertEqual(code, 202)
         self.assertEqual(body["schema"], "heimdall.data_status/1.0")
+
+    def test_negative_content_length_is_rejected(self):
+        import http.client
+        base = self._serve()
+        host, port = base.split("//")[1].split(":")
+        c = http.client.HTTPConnection(host, int(port), timeout=5)
+        c.putrequest("POST", "/api/v1/investigations")
+        c.putheader("Content-Length", "-1")
+        c.endheaders()
+        r = c.getresponse()
+        self.assertEqual(r.status, 400)
+        r.read()
+        c.close()
 
     def test_bearer_token_is_enforced_when_configured(self):
         base = self._serve(token="t0k")

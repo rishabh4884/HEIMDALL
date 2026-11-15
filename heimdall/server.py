@@ -27,7 +27,9 @@ Errors: ``{"schema": "heimdall.http/1.0", "error": {"code", "message"}}`` with 4
 
 from __future__ import annotations
 
+import hmac
 import json
+import math
 import os
 import re
 import threading
@@ -69,6 +71,23 @@ def _num(q: dict, name: str, lo: float, hi: float, default: float | None = None)
     if not (lo <= v <= hi):
         raise ApiError(400, "INPUT_INVALID", f"{name} must be within [{lo}, {hi}]")
     return v
+
+
+def _ra(v: float) -> float:
+    r = v % 360.0
+    return 0.0 if r >= 360.0 else r  # (-1e-20) % 360.0 == 360.0 in floating point
+
+
+COVERAGE_GRID_DEG = 0.01
+
+
+def _snap_cone(ra: float, dec: float, radius: float) -> tuple[float, float, float]:
+    """Snap a browsing cone to a 0.01-degree grid (enlarging the radius so it still contains the requested cone), so map panning maps to a
+    bounded set of index jobs instead of one job per floating-point coordinate."""
+    g = COVERAGE_GRID_DEG
+    sra, sdec = _ra(round(ra / g) * g), max(-90.0, min(90.0, round(dec / g) * g))
+    shift = math.hypot(g / 2 * max(math.cos(math.radians(min(abs(dec), 89.0))), 0.0), g / 2)
+    return round(sra, 6), round(sdec, 6), round(math.ceil((radius + shift) / g) * g, 6)
 
 
 def _detectors(raw) -> tuple[int, ...] | None:
@@ -198,7 +217,7 @@ class Api:
             cat = body.get("category", "MOVING_OBJECT")
             if cat not in CATEGORIES:
                 raise ApiError(400, "INPUT_INVALID", f"category must be one of {sorted(CATEGORIES)}")
-            kw = {"ra": _num(q, "ra", -360.0, 720.0) % 360.0, "dec": _num(q, "dec", -90.0, 90.0), "category": cat}
+            kw = {"ra": _ra(_num(q, "ra", -360.0, 720.0)), "dec": _num(q, "dec", -90.0, 90.0), "category": cat}
         res = self.engine.investigate_target(**kw, analyse_inline=False, wait_s=0.0, **opts)
         if "investigation_id" in res:
             return 200, res
@@ -228,9 +247,11 @@ class Api:
 
     def coverage(self, query: dict) -> dict:
         from .dataservice.schemas import RegionSpec
-        region = RegionSpec(_num(query, "ra", -360.0, 720.0) % 360.0, _num(query, "dec", -90.0, 90.0), _num(query, "radius", 1e-4, 1.0, 0.05),
-                            _detectors(query.get("detectors", [None])[0]))
-        return self.svc.coverage(region, offset=int(_num(query, "offset", 0, 1e7, 0)), limit=int(_num(query, "limit", 1, 2000, 500)))
+        ra, dec, radius = _snap_cone(_ra(_num(query, "ra", -360.0, 720.0)), _num(query, "dec", -90.0, 90.0), _num(query, "radius", 1e-4, 1.0, 0.05))
+        region = RegionSpec(ra, dec, radius, _detectors(query.get("detectors", [None])[0]))
+        out = self.svc.coverage(region, offset=int(_num(query, "offset", 0, 1e7, 0)), limit=int(_num(query, "limit", 1, 2000, 500)))
+        return out | {"queried_cone": {"ra_deg": ra, "dec_deg": dec, "radius_deg": radius,
+                                       "note": f"snapped to a {COVERAGE_GRID_DEG} degree grid; contains the requested cone"}}
 
     def jobs(self, query: dict) -> dict:
         from .dataservice.schemas import JobState
@@ -271,7 +292,12 @@ class Api:
             raise ApiError(400, "INPUT_INVALID", "invalid path")
         if not rp.is_file():
             raise ApiError(404, "NOT_FOUND", missing)
-        return json.loads(rp.read_text(encoding="utf-8"))
+        try:
+            return json.loads(rp.read_text(encoding="utf-8"))
+        except (ValueError, OSError) as exc:  # a server-side record problem, not a client error
+            import sys
+            print(f"[http] unreadable record {rp}: {type(exc).__name__}: {exc}", file=sys.stderr)
+            raise ApiError(500, "RECORD_UNREADABLE", "a saved record could not be read; see the server log") from None
 
 
 def make_handler(api: Api, token: str | None, cors_origin: str | None):
@@ -303,12 +329,17 @@ def make_handler(api: Api, token: str | None, cors_origin: str | None):
 
         def _dispatch(self, method: str) -> None:
             try:
-                if token and self.headers.get("Authorization") != f"Bearer {token}":
+                if token and not hmac.compare_digest((self.headers.get("Authorization") or "").encode(), f"Bearer {token}".encode()):
                     raise ApiError(401, "UNAUTHORIZED", "missing or invalid bearer token")
                 url = urlsplit(self.path)
                 body = None
                 if method == "POST":
-                    n = int(self.headers.get("Content-Length") or 0)
+                    try:
+                        n = int(self.headers.get("Content-Length") or 0)
+                    except ValueError:
+                        raise ApiError(400, "INPUT_INVALID", "invalid Content-Length") from None
+                    if n < 0:
+                        raise ApiError(400, "INPUT_INVALID", "invalid Content-Length")
                     if n > MAX_BODY:
                         raise ApiError(413, "PAYLOAD_TOO_LARGE", f"body larger than {MAX_BODY} bytes")
                     raw = self.rfile.read(n) if n else b"{}"

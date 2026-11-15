@@ -28,7 +28,7 @@ is given. Implementation: `heimdall/server.py` (stdlib only); tests: `tests/test
 | `GET /targets/{id}/attempt` | latest attempt (can be a blocked attempt that did not replace the usable result) | 404 if none |
 | `GET /targets/{id}/versions` | every saved version, newest first: `status`, `supersedes`, `superseded_by`, `supersession_reason`, latest flags | use to show why a conclusion changed |
 | `GET /investigations/{tinv:...}` | one immutable saved version | older versions stay readable |
-| `GET /coverage?ra&dec&radius[&detectors][&offset&limit]` | `heimdall.data_status/1.0` + `observations[]` with footprints from the local index | never runs an analysis; unindexed -> `PREPARING` + job, `observations: null` |
+| `GET /coverage?ra&dec&radius[&detectors][&offset&limit]` | `heimdall.data_status/1.0` + `observations[]` with footprints from the local index | never runs an analysis; the cone is snapped to a 0.01° grid (`queried_cone`, always containing the requested cone); unindexed -> `PREPARING` + job, `observations: null` |
 | `POST /investigations` | body `{"target_id":"NASA-01"}` or `{"ra":..,"dec":..,"category":"MOVING_OBJECT"|"VARIABLE_STAR"}`, optional `options` (`max_observations` 1–64, `detectors`, `mjd_start`, `mjd_end`, `cutout_size_deg` 0.01–0.5, `blind_pipeline`, `context`) | **200** completed result (a stored identical result) or **202** data status with `job.job_id` |
 | `GET /jobs/{job_id}` | target jobs: status (+`events[]`) while preparing; the full result once complete | reconnect at any time; never resubmit |
 | `GET /jobs?state=&kind=&limit=` | job list | |

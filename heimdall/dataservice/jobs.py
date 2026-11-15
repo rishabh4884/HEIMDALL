@@ -35,7 +35,8 @@ class JobQueue:
     def job_id(kind: str, payload: dict) -> str:
         return f"job:{kind.lower()}:{digest([kind, payload], 12)}"
 
-    def submit(self, kind: str, payload: dict, *, deadline_s: float | None = None, revive_complete: bool = False) -> tuple[dict, bool]:
+    def submit(self, kind: str, payload: dict, *, deadline_s: float | None = None, revive_complete: bool = False, revive_terminal: bool = True,
+               internal: bool = False) -> tuple[dict, bool]:
         """Idempotent: the same (kind, payload) returns the existing active or completed job. Returns (job, created_or_revived).
 
         A job that ended in ``UNAVAILABLE_AFTER_DEADLINE`` or ``CANCELLED`` is revived (generation + 1, fresh deadline) by a *new* submission,
@@ -50,6 +51,15 @@ class JobQueue:
                                 (jid, kind, canonical(payload), JobState.QUEUED, 1, now_iso(now), now_iso(now),
                                  now_iso(now + timedelta(seconds=deadline_s or self.cfg.deadline_s)), "{}"))
                 db.conn.execute("INSERT INTO job_events(job_id,at,from_state,to_state,reason) VALUES(?,?,?,?,?)", (jid, now_iso(now), None, JobState.QUEUED, "submitted"))
+                created = True
+            elif not revive_terminal and JobState(row["state"]) in (JobState.UNAVAILABLE_AFTER_DEADLINE, JobState.CANCELLED):
+                created = False  # status-only callers (e.g. map coverage polling) report the terminal state; they never revive it
+            elif internal and JobState(row["state"]) is JobState.UNAVAILABLE_AFTER_DEADLINE:
+                # a dependent job (a parent's worker step) needs this child again: short attempt, recovery window unchanged
+                db.conn.execute("UPDATE jobs SET state=?, generation=generation+1, updated_at=?, deadline_at=?, attempts=0, next_attempt_at=NULL, lease_until=NULL, reason=? WHERE job_id=?",
+                                (JobState.QUEUED, now_iso(now), now_iso(now + timedelta(seconds=self.cfg.recovery_attempt_s)), "revived for a dependent job", jid))
+                db.conn.execute("INSERT INTO job_events(job_id,at,from_state,to_state,reason) VALUES(?,?,?,?,?)",
+                                (jid, now_iso(now), row["state"], JobState.QUEUED, "revived for a dependent job (recovery window unchanged)"))
                 created = True
             elif JobState(row["state"]) in (JobState.UNAVAILABLE_AFTER_DEADLINE, JobState.CANCELLED) or (revive_complete and JobState(row["state"]) is JobState.COMPLETE):
                 db.conn.execute("UPDATE jobs SET state=?, generation=generation+1, updated_at=?, deadline_at=?, attempts=0, next_attempt_at=NULL, lease_until=NULL, reason=? WHERE job_id=?",
@@ -197,8 +207,12 @@ class JobQueue:
 
     def cancel(self, job_id: str) -> dict:
         j = self.get(job_id)
-        if j is None or j["state"] in TERMINAL:
+        if j is None:
             return j  # type: ignore[return-value]
+        if j["state"] is JobState.UNAVAILABLE_AFTER_DEADLINE:  # cancelling also ends the automatic recovery policy
+            return self.transition(job_id, JobState.CANCELLED, reason="cancelled by request (automatic recovery stopped)")
+        if j["state"] in TERMINAL:
+            return j
         return self.transition(job_id, JobState.CANCELLED, reason="cancelled by request")
 
     def expired(self, job: dict) -> bool:

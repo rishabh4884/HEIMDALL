@@ -743,6 +743,38 @@ class RecoveryAndWorkerTests(Base):
         s.tick()
         self.assertEqual(s.jobs.get(jid)["generation"], gen)  # no revival after the window
 
+    def test_internal_revival_keeps_the_window_and_browsing_never_revives(self):
+        s = self.svc()
+        jid = self._expire(s)
+        until = s.jobs.recovery_info(s.jobs.get(jid))["until"]
+        gen = s.jobs.get(jid)["generation"]
+        s.coverage(REGION)  # map browsing reports the state only
+        self.assertEqual((s.jobs.get(jid)["state"], s.jobs.get(jid)["generation"]), (JobState.UNAVAILABLE_AFTER_DEADLINE, gen))
+        s._in_worker = True  # a parent's worker step needs the child again
+        try:
+            s.ensure_index(REGION)
+        finally:
+            s._in_worker = False
+        job = s.jobs.get(jid)
+        self.assertEqual(job["state"], JobState.QUEUED)
+        self.assertLessEqual((datetime.fromisoformat(job["deadline_at"]) - self.clock()).total_seconds(), self.cfg.recovery_attempt_s + 1)
+        s.tick()
+        self.clock.advance(700)
+        s.tick()
+        self.assertEqual(s.jobs.get(jid)["state"], JobState.UNAVAILABLE_AFTER_DEADLINE)
+        self.assertEqual(s.jobs.recovery_info(s.jobs.get(jid))["until"], until)  # window not reset
+
+    def test_cancelling_a_deadline_job_stops_automatic_recovery(self):
+        s = self.svc()
+        jid = self._expire(s)
+        c = s.jobs.cancel(jid)
+        self.assertEqual(c["state"], JobState.CANCELLED)
+        self.archive.mode = "ok"
+        self.clock.advance(8000)
+        s.tick()
+        self.assertEqual(s.jobs.get(jid)["state"], JobState.CANCELLED)
+        self.assertTrue(s.job_status(jid)["must_resubmit"])
+
     def test_cancelled_requests_say_must_resubmit(self):
         s = self.svc()
         st = s.ensure_index(REGION)

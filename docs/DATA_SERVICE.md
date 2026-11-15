@@ -69,6 +69,9 @@ retained under a service-owned recovery policy (`JobQueue.recover_due`, run by e
   recovery attempts do not extend the window; `0` disables recovery;
 * `job.auto_recovery` reports `{active, next_check_at, until, policy}`; `must_resubmit` is `false` while `active`, `true` afterwards;
 * a new submission of the same request still revives it at once (generation + 1) and starts a fresh window.
+* a parent job that needs a deadline-expired child again revives it with the short attempt deadline and does **not** reset its window;
+  map coverage requests (`DataService.coverage`) only report the state and never revive it;
+* `cancel` on a deadline-expired job moves it to `CANCELLED` and stops automatic recovery (`must_resubmit: true`).
 
 ## Long-running worker (deployment mode)
 

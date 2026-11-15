@@ -74,6 +74,14 @@ def reevaluate_variability(state_dir: Path, config, target_id: str, *, reason: s
     tmp = latest.with_suffix(".tmp")
     tmp.write_text(text, encoding="utf-8")
     tmp.replace(latest)
+    attempt = d / "latest_attempt.json"
+    try:  # the latest attempt was the superseded version itself: point it at the re-evaluated version too
+        if attempt.is_file() and json.loads(attempt.read_text(encoding="utf-8")).get("investigation_id") == old["investigation_id"]:
+            tmp = attempt.with_suffix(".tmp")
+            tmp.write_text(text, encoding="utf-8")
+            tmp.replace(attempt)
+    except (OSError, ValueError):
+        pass
     with (d / "supersessions.jsonl").open("a", encoding="utf-8") as fh:
         fh.write(json.dumps({"at": now.isoformat(), "old": old["investigation_id"], "new": new["investigation_id"], "reason": reason,
                              "changed_sections": ["analyses.variability"]}, sort_keys=True) + "\n")

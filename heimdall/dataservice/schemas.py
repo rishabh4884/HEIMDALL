@@ -53,6 +53,7 @@ TRANSITIONS: dict[JobState, frozenset[JobState]] = {
     JobState.PREPARING_DATA: frozenset({JobState.QUEUED, JobState.DISCOVERING, JobState.DOWNLOADING, JobState.COMPLETE, JobState.NO_COVERAGE,
                                         JobState.CANCELLED, JobState.UNAVAILABLE_AFTER_DEADLINE, JobState.INVALID_SOURCE_DATA}),
     **{s: frozenset() for s in TERMINAL},
+    JobState.UNAVAILABLE_AFTER_DEADLINE: frozenset({JobState.CANCELLED}),  # a user may stop the automatic recovery policy
 }
 
 
