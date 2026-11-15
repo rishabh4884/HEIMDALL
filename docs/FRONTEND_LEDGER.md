@@ -108,7 +108,7 @@ The browser checks run against real saved records:
 
 | Missing element | Kind | Effect for the user |
 |---|---|---|
-| Constellation boundary or line dataset with licence | Data | No constellation overlay |
+| IAU constellation boundaries (Davenhall & Leggett 1989, CDS VI/49) | External data access | No constellation overlay. At 21:24 IST the CDS FTP archive timed out, VizieR ASU answered 404 and TAPVizieR timed out. Bundling a downloaded copy into Git is out of scope |
 | PSF-matched, source-registered difference products | Backend method | The difference view is an inspection aid with caveats, not a measurement |
 | Live end-to-end job run in the browser | External access (IRSA discovery outage) | Job reconnect is unit-verified, not live-verified |
 | Manual screen-reader session | Human tester | Automated name and contrast checks only |
@@ -122,4 +122,4 @@ The browser checks run against real saved records:
 | `2510f8e` Add co-registered product pair endpoint for twin image views | F07 (transport), FD-5 | `tests.test_web_pair` plus workbench and server tests in an isolated worktree (44 OK); full suite 577 OK |
 | `8e3cdb2` Integrate the sky, wavelength, time, image comparison and evidence workbench | F01–F19, F21, F23–F26, F28–F32 | 23/23 browser workflows; 17/17 node; full suite 577 OK (5 skipped) |
 | `9921be8` Gate run options on declared capabilities and verify offline and no-worker states | F20, F22 | 24/24 browser online and offline; empty-state check |
-| this commit: name resolution, review notes, demonstration autoplay, table paging, accessibility and load checks | F03, F25, F27, F29, F30 | 28/28 browser on the real state; 29/29 with writes on a throwaway offline state; 582 Python OK; 17 node |
+| `0e8c55a` Add name resolution, review notes, demonstration autoplay and load checks | F03, F25, F27, F29, F30 | 28/28 browser on the real state; 29/29 with writes on a throwaway offline state; 582 Python OK; 17 node |
