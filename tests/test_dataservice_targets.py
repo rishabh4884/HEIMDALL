@@ -211,6 +211,25 @@ class EnginePreparationTests(unittest.TestCase):
         finally:
             eng.data_service().close()
 
+    def test_blind_investigation_is_readiness_first(self):
+        from heimdall.contracts import HeimdallError
+        from heimdall.pipeline.runner import InvestigationRequest
+        eng = Engine(settings=load_settings(environ=self.env))
+        try:
+            req = InvestigationRequest(ra_deg=150.1, dec_deg=2.2, radius_deg=0.05, source_id="irsa-spherex", detectors=[2], max_observations=4,
+                                       cutout_size_deg=0.1)
+            st, run_dir = eng.investigate(req)
+            self.assertIsNone(run_dir)
+            self.assertEqual(st["readiness"], "PREPARING")
+            self.assertIn("not a non-detection", st["note"])
+            self.assertFalse(st["must_resubmit"])
+            self.assertEqual(eng.investigate(req)[0]["job"]["job_id"], st["job"]["job_id"])  # same request joins the same job
+            import dataclasses
+            with self.assertRaises(HeimdallError):
+                eng.investigate(dataclasses.replace(req, calibration_products="full"))
+        finally:
+            eng.data_service().close()
+
     def test_cli_returns_the_job_id_and_exit_zero(self):
         with mock.patch.dict(os.environ, self.env, clear=False):
             out = io.StringIO()

@@ -159,6 +159,18 @@ Live observations (UTC, evidence `.heimdall/verification/2026-11-15-submission/`
   milliseconds); cancellation does not propagate to children (recorded as a known limit; one harmless real SIA2 index of RA 10, Dec -5).
 - Tests: full suite (see commit message).
 
+### M10 — readiness-first blind field investigation (completes S-06 apart from stated limits)
+
+- `Engine.investigate` / CLI `investigate --source irsa-spherex`:
+  - prefetch the region and freeze a manifest;
+  - run the blind pipeline on `LocalStoreSource` with exactly the manifest's observations, catalogue context from cache only;
+  - when the data are not local, return the data status and a durable job id (never an archive error, never a non-detection);
+  - `--live` keeps the direct path;
+  - `reproduce`/`validate` keep the original access path so their results hashes stay comparable.
+- Real check, offline from verified local data: run `R20261115T085320-fce9172d` on the 4 genuine DR1 images of `man:d32d96d3e47d157d`
+  (details in `docs/VERIFICATION_REAL_DATA.md`).
+- Tests: full suite 509 OK (5 live skipped); new `test_blind_investigation_is_readiness_first`.
+
 ## Integration plan (D-007, revised; pending, not executed)
 
 No squash. No rewrite, force-push or merge until the owner explicitly approves the verified plan.

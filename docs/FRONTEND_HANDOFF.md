@@ -69,6 +69,6 @@ Vocabulary rules: `NOT_ASSESSABLE`/`LIMITED_BY_DATA` are not "nothing found"; a 
 
 * Polling only (no WebSocket/SSE). Progress granularity is per job state/event, not percent.
 * `GET /coverage` returns only regions already indexed; a new region queues an INDEX job (returns `PREPARING`).
-* Blind field runs (`python3 -m heimdall investigate`) and `coverage` on the CLI are not exposed over HTTP: they still call the archive
-  directly and are operator tools today (`docs/BACKEND_MASTER_SPEC.md`, S-06).
+* Blind field runs are not exposed over HTTP yet. On the CLI/Python they are readiness-first (prefetch -> frozen manifest -> local run, or a
+  durable job); `--live` is an operator diagnostic.
 * Single-node SQLite state; one worker per state directory.

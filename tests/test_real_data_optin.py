@@ -39,7 +39,7 @@ class LiveInvestigation(unittest.TestCase):
             cov = engine.coverage("irsa-spherex", *FIELD, 0.02, detectors=[2], live=True)  # explicit live diagnostic
             self.assertEqual(cov["outcome"], "OK")
             result, _ = engine.investigate(InvestigationRequest(ra_deg=FIELD[0], dec_deg=FIELD[1], radius_deg=0.02,
-                                                                source_id="irsa-spherex", detectors=[2], max_observations=2))
+                                                                source_id="irsa-spherex", detectors=[2], max_observations=2), live=True)
             self.assertEqual(result["data_origin"], "REAL")
             self.assertIn(result["status"]["execution"], ("COMPLETED", "PARTIAL"))
             included = [o for o in result["observations"] if o["included"]]

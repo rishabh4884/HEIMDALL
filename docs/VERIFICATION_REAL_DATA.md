@@ -31,6 +31,16 @@ Everything below was observed on the real archive through the service. None of i
   - Repeating it with `HEIMDALL_OFFLINE=1` returned `READY` with the same manifest from local data (`prefetch_offline_repeat.json`).
   - These products were acquired and verified, not measured: the measurement needs the field-star catalogue, which was still
     unavailable.
+- **Blind pipeline on the same real images, with no network.** At 08:53Z,
+  `HEIMDALL_OFFLINE=1 python3 -m heimdall investigate --source irsa-spherex --ra 150.1 --dec 2.2 --radius 0.05 --detectors 2 --cutout-size 0.1 --max-observations 4`
+  produced run `R20261115T085320-fce9172d` (`blind_offline_run.txt`):
+  - `REAL`, executed only from manifest `man:d32d96d3e47d157d`;
+  - 4 of 4 images usable over 3 epochs, 103 detections, 33 sources, 0 tracks;
+  - candidates: 2 `INCONCLUSIVE` and 1 `EXPLAINED`;
+  - 1.3 s wall time;
+  - `PARTIAL`, because Gaia context was `OFFLINE_NOT_CACHED` (recorded, not skipped).
+
+  These are blind-pipeline outputs, not validated detections. The Planet X region status is `NOT_ASSESSABLE`.
 - **Last real measurement through the service.** NASA-01 at about 06:20 today: `tinv:NASA-01:fd9680e5`, manifest
   `man:e8ea091b52f6041c`, 10 products, 7 measured, `LIMITED_BY_DATA` because every measured image is saturation-flagged. It is
   described in the next section.

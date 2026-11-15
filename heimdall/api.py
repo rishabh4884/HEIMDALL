@@ -144,10 +144,43 @@ class Engine:
     # -- investigations ------------------------------------------------------------
 
     def investigate(self, request: InvestigationRequest, *, progress=None, save: bool = True, svg: bool = True,
-                    out_dir: Path | None = None) -> tuple[dict, Path | None]:
-        source = self.source(request.source_id, request.local_root)
-        pipeline = InvestigationPipeline(source, self.config, self.settings, self.validation, progress)
+                    out_dir: Path | None = None, live: bool = False) -> tuple[dict, Path | None]:
+        """Run the blind investigation pipeline on a region.
+
+        For ``irsa-spherex`` (unless ``live``) this is readiness-first: the region's products are prefetched by the data service, a manifest
+        is frozen, and the pipeline runs only on those verified local products with catalogue context read from cache (no network). If the
+        data are not yet local, ``(data_status, None)`` is returned with a durable job id instead of a result (never an archive error)."""
+        from .dataservice.schemas import CURRENT_COLLECTIONS
+        readiness = (request.source_id == "irsa-spherex" and not live
+                     and (not request.collections or all(c in CURRENT_COLLECTIONS for c in request.collections)))
+        input_manifest = None
+        if readiness:
+            import dataclasses
+            from .dataservice.localsource import LocalStoreSource
+            from .dataservice.schemas import RegionSpec
+            if request.calibration_products != "epsf":
+                raise HeimdallError.of(ErrorCode.INPUT_INVALID, "calibration_products=full is not held by the data service; use live=True (--live)")
+            svc = self.data_service(request.source_id)
+            region = RegionSpec(request.ra_deg % 360.0, request.dec_deg, request.radius_deg, tuple(request.detectors) if request.detectors else None,
+                                request.mjd_start, request.mjd_end, tuple(request.collections) if request.collections else None)
+            st = svc.prefetch(region, cutout_size_deg=request.cutout_size_deg, max_observations=request.max_observations or 16)
+            if st["readiness"] != "READY":
+                return st | {"investigation": None, "note": "no scientific result yet: the region's data are being prepared by a durable job "
+                                                             "(run a worker); this is not a non-detection"}, None
+            input_manifest = svc.manifest(st["manifest_id"])
+            request = dataclasses.replace(request, ra_deg=region.ra_deg, obs_ids=[p["obs_id"] for p in input_manifest["products"]])
+            source = LocalStoreSource(svc, input_manifest)
+            settings = dataclasses.replace(self.settings, offline=True)  # context from cache only; nothing on this path uses the network
+        else:
+            source = self.source(request.source_id, request.local_root)
+            settings = self.settings
+        pipeline = InvestigationPipeline(source, self.config, settings, self.validation, progress)
         result = pipeline.run(request)
+        if input_manifest is not None:
+            result["input_manifest"] = {"manifest_id": input_manifest["manifest_id"], "products": input_manifest["products"],
+                                        "calibrations": input_manifest["calibrations"], "index": input_manifest.get("index")}
+            result["data_status"] = {"readiness": "READY", "served_from": "verified local data (no archive request)",
+                                     "manifest_id": input_manifest["manifest_id"]}
         run_dir = None
         if save:
             skymap = build_skymap(result)
@@ -277,7 +310,8 @@ class Engine:
         original = self.load(ref)
         request = InvestigationRequest.from_dict(original["request"])
         engine = Engine(self.settings, EngineConfig.from_dict(original["config"]), self.adapters)
-        rerun, run_dir = engine.investigate(request)
+        # the original access path (archive adapter with its own cache-first replay), so the observation selection and hash are comparable
+        rerun, run_dir = engine.investigate(request, live=True)
         return {"original_run": original["run_id"], "rerun": rerun["run_id"], "rerun_dir": str(run_dir) if run_dir else None,
                 "original_hash": original["results_hash"], "rerun_hash": rerun["results_hash"],
                 "identical": original["results_hash"] == rerun["results_hash"],
@@ -288,7 +322,7 @@ class Engine:
         original = self.load(ref)
         request = InvestigationRequest.from_dict({**original["request"], "run_validation": True})
         engine = Engine(self.settings, EngineConfig.from_dict(original["config"]), self.adapters)
-        result, run_dir = engine.investigate(request)
+        result, run_dir = engine.investigate(request, live=True)  # same access path as the stored run
         return {"run_id": result["run_id"], "run_dir": str(run_dir) if run_dir else None,
                 "validation": result["validation"], "summary": summarize(result)}
 

@@ -120,6 +120,7 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--json", action="store_true")
     s.add_argument("--live", action="store_true", help="operator diagnostic: query the archive directly instead of the local index")
     s = sub.add_parser("investigate", help="run the full investigation pipeline on a region")
+    s.add_argument("--live", action="store_true", help="operator diagnostic: read the archive directly instead of verified local data")
     region(s)
     s.add_argument("--max-observations", type=int, help="evenly spaced selection in time")
     s.add_argument("--cutout-size", type=float, help="IRSA cutout size in degrees (default 2 x radius)")
@@ -268,7 +269,11 @@ def _run(args) -> int:
                                    local_root=args.local_root, context="none" if args.no_context else "auto",
                                    calibration_products=args.calibration_products)
         progress = None if args.quiet else (lambda stage, msg: print(f"[{stage}] {msg}", file=sys.stderr))
-        result, run_dir = engine.investigate(req, progress=progress, svg=not args.no_svg, out_dir=args.out)
+        result, run_dir = engine.investigate(req, progress=progress, svg=not args.no_svg, out_dir=args.out, live=args.live)
+        if run_dir is None and "run_id" not in result:  # accepted: data are being prepared by a durable job
+            job = result.get("job") or {}
+            print(f"{result['readiness']}: {result['message']} (job={job.get('job_id')}; do not resubmit)")
+            return 0
         from .api import summarize
         _print_summary(summarize(result))
         print(f"  saved to {run_dir}")
