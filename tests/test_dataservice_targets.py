@@ -289,3 +289,34 @@ class FollowupTests(unittest.TestCase):
         self.assertIn("budget", p2["stopping_reason"])
         over = run(self.eng, next(a["action_id"] for a in p2["actions"] if a["kind"] == "more_epochs"), budget_products=8)
         self.assertIn("over budget", over["note"])
+
+
+class CatalogueOutagePolicyTests(unittest.TestCase):
+    """Optional catalogue context: a coordinate request proceeds coordinate-only after the grace; a named target keeps waiting."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.settings = load_settings(environ={"HEIMDALL_STATE_DIR": str(self.tmp / "state"), "HEIMDALL_CACHE_DIR": str(self.tmp / "cache")})
+        self.svc = DataService(self.tmp / "svc", None, ServiceConfig(), offline=True)
+
+    def tearDown(self):
+        self.svc.close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _advance(self, spec, degraded):
+        from unittest import mock
+        from heimdall.targets.astrometry import ReferenceAstrometry
+        failed = ReferenceAstrometry(target_id=spec.target_id, catalogue="gaia_dr3", status="SERVICE_FAILED", reason="request to gea.esac.esa.int timed out",
+                                     ra_deg=None, dec_deg=None)
+        with mock.patch.object(prepare.astrometry, "resolve", return_value=failed):
+            return prepare.advance(self.svc, spec, TargetOptions(context=False), settings=self.settings, config=EngineConfig(), registry=None, store=None,
+                                   online=True, allow_degraded=degraded)
+
+    def test_coordinate_request_proceeds_narrowed_after_grace_and_named_target_waits(self):
+        from heimdall.targets.registry import TargetSpec, get_target
+        coord = TargetSpec.from_coordinates(150.1, 2.2, category="VARIABLE_STAR")
+        self.assertEqual(self._advance(coord, False)["waiting_on"], "catalogue")  # within the grace: recoverable wait
+        after = self._advance(coord, True)
+        self.assertEqual(after["waiting_on"], "index")  # past the grace: continues to data preparation with a coordinate-only reference
+        named = self._advance(get_target("NASA-04"), True)
+        self.assertEqual(named["waiting_on"], "catalogue")  # a named target's identity is essential: it keeps waiting

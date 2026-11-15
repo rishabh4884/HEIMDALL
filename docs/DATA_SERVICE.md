@@ -181,3 +181,15 @@ calibration dependencies, and bytes estimated only from *measured* stored full-f
 - It checks disk free space, the reserve and the quota, and protects pinned evidence.
 - Without a measured full-frame sample the estimate is `UNMEASURED` and execution is refused.
 - Measured so far: science cutouts 4.0 MB each (n=32), ePSF 7.9 MB; no full frame has been measured yet.
+
+## Catalogue outages (2026-11-15)
+
+Reference astrometry and the Gaia field catalogue are retried by the job, with one bounded attempt per run. After
+`CATALOGUE_GRACE_ATTEMPTS` (3) failures:
+- **Arbitrary coordinates** continue coordinate-only. They need no catalogue identity.
+- **Every request** continues without field controls when only the field catalogue is missing. The analysis records the missing
+  catalogue, and claims that need controls cannot be stronger than INCONCLUSIVE.
+- **Named targets** keep waiting, because their identity and proper motion are essential.
+
+The job result and data status carry `degraded_context`. A degraded result is never reused once the catalogue is back.
+`python3 -m heimdall context-status` probes Gaia (IRSA, ESA), CatWISE and JPL once each and classifies failures from evidence.

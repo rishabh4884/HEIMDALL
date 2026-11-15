@@ -299,6 +299,23 @@ instead of being analysed. Full suite: 535 OK (5 live skipped).
   four present; NASA-04 is missing motion (not run) and spectral (not assessable).
 - Tests: full suite 550 OK (5 live skipped).
 
+### R2-M4 — catalogue-outage policy and external-service evidence (this commit)
+
+- **Policy (`targets/prepare.py`).** Catalogue context is retried for `CATALOGUE_GRACE_ATTEMPTS` (3) failures. After that:
+  - an arbitrary-coordinate request proceeds with a coordinate-only reference;
+  - any request proceeds without field controls when only the field catalogue is missing;
+  - a named target keeps waiting (its identity and proper motion are essential), so it stays recoverable.
+- **How narrowing works.** Degraded runs record `degraded_context` in the job result and data status, use a distinct reuse key (never
+  served once context returns), and make single bounded catalogue attempts. Conclusions narrow automatically: no controls means no
+  registration and no control-star false-alarm reference, so the claims gate allows at most INCONCLUSIVE.
+  Test: `CatalogueOutagePolicyTests`.
+- **`heimdall/context/health.py` and CLI `context-status`.** One bounded probe per service, in parallel, classified from evidence.
+  Live at 10:27Z, with no proxy configured: Gaia@IRSA HTTP 502, CatWISE@IRSA HTTP 502, Gaia@ESA timeout (40 s), JPL reachable. The
+  long Gaia wait is therefore a real upstream outage at both providers (`context_status_live.txt`).
+- **Live.** Job `job:target_investigation:c03487f9482a` (RA 150.1, Dec 2.2) has 9 catalogue failures, so its next attempt (10:40:57Z,
+  worker pid 7250) takes the narrowed path. It then needs an index of its field, which waits for IRSA discovery (SIA2/TAP 502 at 10:24Z).
+- Tests: full suite 552 OK (5 live skipped).
+
 ## Integration record (D-007; approved by the owner on 2026-11-15)
 
 The full individual commit history is kept; nothing is squashed. Steps and verification:

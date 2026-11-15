@@ -210,6 +210,8 @@ def _parser() -> argparse.ArgumentParser:
     s = sub.add_parser("cache", help="list or clear cached products")
     s.add_argument("action", choices=["list", "clear"])
     s.add_argument("--older-than-days", type=float)
+    s = sub.add_parser("context-status", help="probe Gaia (IRSA, ESA), CatWISE and JPL reachability once each; classify failures from evidence")
+    s.add_argument("--timeout", type=float, default=20.0)
     s = sub.add_parser("inventory", help="partitioned all-sky metadata inventory: plan, step (queue INDEX jobs), status/accounting")
     s.add_argument("action", choices=["plan", "step", "status", "mirror-plan"])
     s.add_argument("--tile-deg", type=float, default=2.0)
@@ -246,6 +248,13 @@ def _run(args) -> int:
     from .pipeline.runner import InvestigationRequest
 
     cfg_path = getattr(args, "config", None)
+    if args.command == "context-status":
+        from .context.health import context_health
+        h = context_health(args.timeout)
+        print(f"proxy configured: {h['proxy_configured'] or 'none'}")
+        for r in h["services"]:
+            print(f"{r['checked_at']} {r['service']:18s} {r['classification']:22s} http={r.get('http_status') or '-'} {r['elapsed_s']:6.2f}s {r.get('detail') or r.get('note') or ''}")
+        return 0 if any(r["classification"] == "OK" for r in h["services"]) else 1
     if args.command == "inventory":
         from .dataservice.allsky import AllSkyIndex
         eng = Engine.from_environment(_env_file())

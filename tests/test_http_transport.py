@@ -61,3 +61,21 @@ class TransportCleanupTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ContextHealthTests(unittest.TestCase):
+    def test_failures_are_classified_from_evidence(self):
+        from heimdall.context.health import context_health
+        from heimdall.data_access.http import HttpResponse, TransportUnreachable
+
+        def transport(method, url, data, headers, timeout):
+            if "gea.esac" in url:
+                raise TransportTimeout("timed out")
+            if "ssd-api" in url:
+                raise TransportUnreachable("[Errno 8] nodename nor servname provided, or not known")
+            if b"catwise" in (data or b""):
+                return HttpResponse(502, b"<html>Proxy Error</html>")
+            return HttpResponse(200, b"source_id\n1\n")
+        h = context_health(transport=transport)
+        got = {r["service"]: r["classification"] for r in h["services"]}
+        self.assertEqual(got, {"gaia_dr3@IRSA": "OK", "gaia_dr3@ESA": "TIMEOUT", "catwise2020@IRSA": "UPSTREAM_HTTP_5XX", "jpl_sb_ident": "DNS_FAILURE"})

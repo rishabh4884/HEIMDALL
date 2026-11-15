@@ -72,8 +72,11 @@ def _stored_result(service: DataService, key: str) -> dict | None:
     return None if r is None else saved_version(service, r["investigation_id"], r["saved_to"])
 
 
+CATALOGUE_GRACE_ATTEMPTS = 3  # catalogue failures tolerated before a coordinate request proceeds with explicitly narrowed context
+
+
 def advance(service: DataService, spec: TargetSpec, opts: TargetOptions, *, settings, config, registry, store, online: bool, progress=None,
-            analyse: bool = True) -> dict:
+            analyse: bool = True, allow_degraded: bool = False) -> dict:
     """One non-blocking step. Returns {"state": "DONE", "result": ...} or {"state": "WAIT"|<terminal readiness>, ...}. Online = a worker may use the network.
     ``analyse=False``: if every input is local but no stored identical result exists, return WAIT(analysis) instead of computing inline."""
     cfg_settings = settings if online else _offline(settings)
@@ -81,9 +84,13 @@ def advance(service: DataService, spec: TargetSpec, opts: TargetOptions, *, sett
     gaia = CachedService("gaia", cat_settings)
     catwise = CachedService("catwise", cat_settings)
     ref = astrometry.resolve(spec, catwise if spec.catalogue == "catwise2020" else gaia, gaia_service=gaia)
+    degraded: list[str] = []
     if not ref.resolved:
         coord = spec.target_id.startswith("COORD-")
-        if coord and (ref.status == "UNRESOLVED" or settings.offline):
+        if coord and allow_degraded and ref.status != "UNRESOLVED" and not settings.offline:
+            # catalogue outage past its grace: an arbitrary coordinate does not need a catalogue identity; proceed coordinate-only and say so
+            degraded.append(f"reference catalogue unavailable ({ref.status}: {ref.reason}); coordinate-only reference used")
+        if coord and (ref.status == "UNRESOLVED" or settings.offline or degraded):
             # no catalogue entry (or the operator runs fully offline): an arbitrary coordinate is investigated as a coordinate-only reference, as always
             ref = coordinate_only_reference(spec, ref)
         elif online and ref.status == "UNRESOLVED":
@@ -140,19 +147,24 @@ def advance(service: DataService, spec: TargetSpec, opts: TargetOptions, *, sett
             # field-star catalogue for registration controls: must be cached (a worker warms it) or the analysis would silently lose its controls
             gq = astrometry.gaia_cone_with_fallback(gaia, cen.ra_deg, cen.dec_deg, size * 0.75, 17.0)
             if gq.status != "COMPLETED" and not _synthetic(by_id):
-                return {"state": "WAIT", "waiting_on": "field_catalogue", "child": None, "detail": f"field catalogue not yet available ({gq.reason})"}
-    key = request_key(spec, opts, config.hash, (manifest["manifest_id"] if manifest else f"idx:{idx.get('as_of')}") + f"|fp:{footprint_index}")
+                if not allow_degraded:
+                    return {"state": "WAIT", "waiting_on": "field_catalogue", "child": None, "detail": f"field catalogue not yet available ({gq.reason})"}
+                # optional context past its grace: measure without registration controls; the analysis records the missing field catalogue
+                # and the claims gate narrows every conclusion that needs controls
+                degraded.append(f"field-star catalogue unavailable ({gq.reason}); no registration controls or control-star false-alarm reference")
+    key = request_key(spec, opts, config.hash, (manifest["manifest_id"] if manifest else f"idx:{idx.get('as_of')}") + f"|fp:{footprint_index}"
+                      + (("|degraded:" + digest(degraded, 8)) if degraded else ""))  # a degraded result is never reused once context is back
     prior = _stored_result(service, key)
     if prior is not None:
         return {"state": "DONE", "result": prior, "manifest": manifest, "reused": True}
     if not analyse:
         return {"state": "WAIT", "waiting_on": "analysis", "child": None, "detail": "all inputs are verified locally; the analysis is queued for a worker"}
-    res = investigate_target(spec, source=LocalStoreSource(service, manifest), settings=cfg_settings, config=config, registry=registry, store=store, options=opts,
-                             progress=progress, input_manifest=manifest)
+    res = investigate_target(spec, source=LocalStoreSource(service, manifest), settings=_single_attempt(cfg_settings) if degraded else cfg_settings,
+                             config=config, registry=registry, store=store, options=opts, progress=progress, input_manifest=manifest)
     if res.get("saved_to"):
         service.db.execute("INSERT OR REPLACE INTO investigation_results(key,investigation_id,saved_to,manifest_id,created_at) VALUES(?,?,?,?,?)",
                            (key, res["investigation_id"], res["saved_to"], manifest["manifest_id"] if manifest else None, now_iso(service.clock())))
-    return {"state": "DONE", "result": res, "manifest": manifest}
+    return {"state": "DONE", "result": res, "manifest": manifest, "degraded": degraded}
 
 
 def _synthetic(by_id: dict) -> bool:
@@ -199,7 +211,8 @@ def investigation_status(service: DataService, job_id: str, spec: TargetSpec | N
     doc = saved_version(service, result.get("investigation_id"), result.get("saved_to")) if job["state"] is JobState.COMPLETE else None
     if doc is not None:
         out = doc
-        out["data_status"] = {"readiness": "READY", "job_id": job_id, "manifest_id": result.get("manifest_id")}
+        out["data_status"] = {"readiness": "READY", "job_id": job_id, "manifest_id": result.get("manifest_id"),
+                              "degraded_context": result.get("degraded_context") or []}
         return out
     st["status"] = {"execution": "PREPARING_DATA" if readiness is Readiness.PREPARING else readiness.value, "test_status": None, "reason": st["message"]}
     st["investigation"] = {"target": (spec.target_id if spec else job["payload"]["spec"]["target_id"]), "result_available": False,
@@ -215,16 +228,20 @@ def make_handler(*, settings, config, registry, store):
         spec = _spec_from(job["payload"]["spec"])
         opts = TargetOptions(**{k: (tuple(v) if isinstance(v, list) else v) for k, v in job["payload"]["options"].items()})
         service.jobs.transition(jid, JobState.DISCOVERING, reason="preparing data for the investigation", lease=True)
+        n_cat = sum(1 for e in service.jobs.events(jid) if (e["reason"] or "").startswith(("reference astrometry not yet available", "field catalogue not yet available")))
         try:
-            step = advance(service, spec, opts, settings=settings, config=config, registry=registry, store=store, online=True)
+            step = advance(service, spec, opts, settings=settings, config=config, registry=registry, store=store, online=True,
+                           allow_degraded=n_cat >= CATALOGUE_GRACE_ATTEMPTS)
         except Exception as exc:  # noqa: BLE001 - recorded: request errors fail; unexpected errors retry a bounded number of times, then FAILED
             return service.jobs.fail_or_retry(service.jobs.get(jid), exc)
         state = step["state"]
         if state == "DONE":
             res = step["result"]
-            return service.jobs.transition(jid, JobState.COMPLETE, reason="investigation complete from verified local data",
+            return service.jobs.transition(jid, JobState.COMPLETE, reason="investigation complete from verified local data"
+                                           + (" (catalogue context unavailable: conclusions narrowed)" if step.get("degraded") else ""),
                                            result={"saved_to": res.get("saved_to"), "investigation_id": res.get("investigation_id"),
-                                                   "manifest_id": (step.get("manifest") or {}).get("manifest_id"), "status": res.get("status")})
+                                                   "manifest_id": (step.get("manifest") or {}).get("manifest_id"), "status": res.get("status"),
+                                                   "degraded_context": step.get("degraded") or []})
         if state == "WAIT" and step.get("waiting_on") in ("catalogue", "field_catalogue"):
             return service.jobs.schedule_retry(service.jobs.get(jid), error={"code": "CATALOGUE_PENDING", "message": step["detail"]},
                                                reason=f"{step['detail']}; retrying automatically", progress={"waiting_on": step["waiting_on"]})
