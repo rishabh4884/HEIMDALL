@@ -5,7 +5,7 @@ export const deltaRA = (ra, center) => wrapRA(ra - center + 180) - 180;
 const clamp = (x, min, max) => Math.min(max, Math.max(min, x));
 const steps = [.00001, .00002, .00005, .0001, .0002, .0005, .001, .002, .005, .01, .02, .05, .1, .2, .5, 1, 2, 5, 10, 15, 30, 45, 60, 90];
 const color = { coverage: "#6d9fd0", detections: "#f2c879", sources: "#c2d8ec", candidates: "#efa8d9",
-  associations: "#91aac8", tracks: "#6ddcca", catalogue: "#a6b3d6", inventory: "#6ddcca", reference: "#9ee9dd", planes: "#c9a6ff", frames: "#ffffff" };
+  associations: "#91aac8", tracks: "#6ddcca", catalogue: "#a6b3d6", inventory: "#6ddcca", reference: "#9ee9dd", planes: "#c9a6ff", frames: "#ffffff", constellations: "#8fb3c9" };
 const valid = (x) => typeof x === "number" && Number.isFinite(x);
 const RAD = Math.PI / 180;
 
@@ -347,7 +347,7 @@ export class SkyMap {
   }
   drawPaths(g) {
     const { ctx } = this;
-    for (const key of ["planes", "inventory", "coverage", "associations", "tracks", "catalogue"]) {
+    for (const key of ["constellations", "planes", "inventory", "coverage", "associations", "tracks", "catalogue"]) {
       if (!this.layers?.[key]) continue;
       for (const item of this.data[key] || []) {
         if (!item.coords?.length) continue;

@@ -195,6 +195,10 @@ def aligned_pair(service, cache: Path, sha_a: str, sha_b: str, ra: float, dec: f
         enc[ok & (enc == 0)] = 1
         out["difference"] = {
             "order": "B minus A", "units": "sigma (propagated variance)", "clip_sigma": CLIP_SIGMA,
+            "psf_matched": False, "interpretation": "DISPLAY_ONLY_NOT_EVIDENCE",
+            "disclosure": ("Visual subtraction without PSF matching. Residuals include PSF and pointing differences, resampling noise, "
+                           "background and small wavelength differences. It is not evidence of astrophysical change, not a detection and "
+                           "not a measurement; change claims come only from the investigation's gated analyses."),
             "pixels": base64.b64encode(enc.tobytes()).decode("ascii"),
             "encoding": "0 = masked/no data; 128 = 0 sigma; 1 and 255 = -/+ clip",
             "masked_fraction": round(float(1 - ok.mean()), 4),

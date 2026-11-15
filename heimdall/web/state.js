@@ -18,7 +18,7 @@ export const PATTERNS = {
 export const SELECTION_KINDS = ["observation", "product", "candidate", "source", "detection", "claim", "evidence", "reference", "manifest"];
 export const TABS = ["answer", "evidence", "deeper", "history"];
 export const LAYERS = ["survey", "grid", "reference", "coverage", "detections", "sources", "candidates", "tracks", "associations",
-  "catalogue", "inventory", "planes"];
+  "catalogue", "inventory", "planes", "constellations"];
 export const DEFAULT_LAYERS = new Set(["survey", "reference", "coverage", "detections", "sources", "candidates", "tracks"]);
 const FILTER_KEYS = { detector: "f.det", release: "f.rel", quality: "f.q", start: "f.t0", end: "f.t1", waveStart: "f.w0", waveEnd: "f.w1" };
 const NUMERIC_FILTERS = new Set(["start", "end", "waveStart", "waveEnd"]);

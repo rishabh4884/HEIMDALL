@@ -13,6 +13,10 @@ const BASE = arg("--base", "http://127.0.0.1:8777");
 const OUT = arg("--out", mkdtempSync(join(tmpdir(), "heimdall-browser-")));
 const CHROME = arg("--chrome", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
 const WRITES = process.argv.includes("--writes"); // write-path checks (review notes); use only against a throwaway state
+// --job-flow: the full durable-job journey through the UI (submit -> queued without worker -> reload/reconnect -> worker started
+// by this script with the inherited HEIMDALL_* environment -> completion -> result displayed -> a second job cancelled).
+// Only for a disposable state: it queues real jobs and starts a worker for whatever state the environment names.
+const JOB_FLOW = process.argv.includes("--job-flow");
 mkdirSync(OUT, { recursive: true });
 const port = 9300 + Math.floor(Math.random() * 400);
 const chrome = spawn(CHROME, ["--headless=new", `--remote-debugging-port=${port}`, `--user-data-dir=${mkdtempSync(join(tmpdir(), "hcdp-"))}`,
@@ -69,6 +73,14 @@ const go = async (path) => {
 const click = (sel) => evaluate(`const el = document.querySelector(${JSON.stringify(sel)}); if (!el) throw new Error("missing ${sel.replaceAll('"', "'")}"); el.click(); return true;`);
 const text = (sel) => evaluate(`return document.querySelector(${JSON.stringify(sel)})?.textContent || ""`);
 const assert = (c, m) => { if (!c) throw new Error(m); };
+const KEYS = { Tab: 9, Enter: 13, Escape: 27, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, Home: 36, End: 35, " ": 32 };
+async function press(key, shift = false) { // real keyboard input through the browser's input pipeline
+  const base = { key, code: key === " " ? "Space" : key, windowsVirtualKeyCode: KEYS[key], modifiers: shift ? 8 : 0 };
+  await send("Input.dispatchKeyEvent", { type: "keyDown", ...base, ...(key === "Enter" ? { text: "\r" } : key === " " ? { text: " " } : {}) });
+  await send("Input.dispatchKeyEvent", { type: "keyUp", ...base });
+  await sleep(60);
+}
+const focused = () => evaluate(`const a = document.activeElement; return a ? (a.id || a.getAttribute("aria-label") || a.dataset.tab || a.textContent.trim().slice(0, 40) || a.tagName) : null`);
 
 try {
   await connect();
@@ -76,6 +88,64 @@ try {
   const posts = [];
   ws.addEventListener("message", (m) => { const msg = JSON.parse(m.data); if (msg.method === "Network.requestWillBeSent" && msg.params.request.method === "POST") posts.push(msg.params.request.url); });
 
+  if (JOB_FLOW) {
+    let worker = null;
+    const submitRegion = async (limits) => {
+      await click("#open-field");
+      await waitFor(`document.querySelector("#region-form")`);
+      await evaluate(`const f = document.querySelector("#region-form"); f.pos.value = "150.1 2.2"; f.radius.value = "0.05";
+        f.querySelector('input[value="field"]').checked = true; f.querySelector("details.limits").open = true;
+        Object.entries(${JSON.stringify(limits)}).forEach(([k, v]) => { f.elements[k].value = v; }); f.requestSubmit(); return true`);
+      await waitFor(`document.querySelector("#dialog-content").textContent.includes("Queued as a durable job")`, 20000);
+      return evaluate(`return document.querySelector("#dialog-content .job .mono").textContent`);
+    };
+    try {
+      await check("job flow: submit through the UI; queued while no worker runs", async () => {
+        await go("/");
+        assert((await text("#worker-banner")).includes("No data worker"), "absent-worker banner missing");
+        const before = posts.length;
+        const id = await submitRegion({ detectors: "2", max_observations: "4", mjd_start: "61169.0", mjd_end: "61169.3" });
+        assert(posts.length === before + 1, "exactly one POST expected");
+        await evaluate(`document.querySelector("#close-dialog").click()`);
+        await waitFor(`!document.querySelector("#job-count").hidden`);
+        globalThis.__job = id;
+        return `${id} queued`;
+      });
+      await check("job flow: reload reconnects to the job without resubmitting", async () => {
+        const before = posts.length;
+        await go("/");
+        await click("#show-jobs");
+        // The job card's own state chip must come from a fresh poll of the server (not "Checking").
+        await waitFor(`[...document.querySelectorAll("#dialog-content .job")].some(j => j.textContent.includes(${JSON.stringify(globalThis.__job)}) && /^(Queued|Discovering|Preparing data)$/.test(j.querySelector("header .chip")?.textContent.trim()))`, 15000);
+        const t = await evaluate(`return [...document.querySelectorAll("#dialog-content .job")].find(j => j.textContent.includes(${JSON.stringify(globalThis.__job)})).querySelector("header .chip").textContent`);
+        assert(posts.length === before, "reload resubmitted");
+        await evaluate(`document.querySelector("#close-dialog").click()`);
+        return "tracked job restored from this browser; no POST";
+      });
+      await check("job flow: worker starts → preparation → completion → result displayed", async () => {
+        worker = spawn("python3", ["-m", "heimdall", "data", "worker", "--max-idle", "300"], { stdio: "ignore", env: process.env });
+        await click("#show-jobs");
+        await waitFor(`[...document.querySelectorAll("#dialog-content .job")].some(j => j.textContent.includes(${JSON.stringify(globalThis.__job)}) && j.querySelector('[data-action="run"]'))`, 180000);
+        await evaluate(`[...document.querySelectorAll("#dialog-content .job")].find(j => j.textContent.includes(${JSON.stringify(globalThis.__job)})).querySelector('[data-action="run"]').click(); return true`);
+        await waitFor(`location.search.includes("run=R") && document.querySelector(".quick-answer")?.textContent.includes("Field result")`, 20000);
+        const chips = await text("#heading-chips");
+        assert(/Real data/.test(chips), `origin chip: ${chips}`);
+        return `${(await evaluate(`return new URLSearchParams(location.search).get("run")`))} displayed (${chips.replace(/\s+/g, " ").trim()})`;
+      });
+      await check("job flow: a job needing uncached products is cancelled from the UI", async () => {
+        await go("/");
+        const id = await submitRegion({ detectors: "2", max_observations: "5" });
+        await evaluate(`window.confirm = () => true; return true`);
+        await waitFor(`document.querySelector('#dialog-content [data-action="cancel-job"]')`, 15000);
+        await click('#dialog-content [data-action="cancel-job"]');
+        await click("#close-dialog");
+        await click("#show-jobs");
+        await waitFor(`[...document.querySelectorAll("#dialog-content .job")].some(j => j.textContent.includes(${JSON.stringify(id)}) && /Cancelled/.test(j.textContent))`, 30000);
+        return `${id} cancelled; shared prerequisite jobs untouched`;
+      });
+    } finally { worker?.kill("SIGTERM"); }
+    throw new Error("__job_flow_done__");
+  }
   await check("fresh start shows all sky, library and no analysis POST", async () => {
     await go("/");
     await waitFor(`document.querySelectorAll(".library-item").length >= 5`);
@@ -183,7 +253,16 @@ try {
     const status = await text(".twin-status");
     const diffDisabled = await evaluate(`return document.querySelector('[data-twin="difference"]').disabled`);
     assert(/COMPARABLE/.test(status), "no comparability shown");
-    if (!diffDisabled) { await click('[data-twin="difference"]'); await waitFor(`document.querySelector('.twin-views[data-mode="difference"] canvas')`); }
+    if (!diffDisabled) {
+      await click('[data-twin="difference"]');
+      // An explicit acknowledgement precedes the image, and the disclosure stays visible beside it.
+      await waitFor(`document.querySelector(".diff-disclosure") && document.querySelector('[data-twin="ack"]')`);
+      assert(!(await evaluate(`return Boolean(document.querySelector('.twin-views[data-mode="difference"] canvas'))`)), "difference rendered before acknowledgement");
+      await click('[data-twin="ack"]');
+      await waitFor(`document.querySelector('.twin-views[data-mode="difference"] canvas')`);
+      const disc = await text(".diff-disclosure");
+      assert(/Not PSF-matched/.test(disc) && /not evidence of astrophysical change/.test(disc), `disclosure missing: ${disc}`);
+    }
     await click('[data-twin="blink"]');
     await waitFor(`document.querySelector('[data-twin="blink-step"]')`);
     // the ribbon drives image B while the comparison panel is open
@@ -400,6 +479,74 @@ try {
     assert((await text(".note")).includes("Human note"), "note not labelled");
     return "persisted";
   });
+  await check("keyboard: skip link, dialog focus and return, tab arrows, strip, ribbon, search, focus-visible", async () => {
+    await go("/?target=NASA-02");
+    await waitFor(`document.querySelector(".status-grid")`);
+    await evaluate(`document.activeElement?.blur(); window.scrollTo(0, 0); return true`);
+    await press("Tab");
+    assert((await focused()) === "skip-inspector", `first Tab should reach the skip link, got ${await focused()}`);
+    assert(await evaluate(`return document.activeElement.matches(":focus-visible")`), "skip link focus not visible");
+    await press("Enter");
+    assert((await focused()) === "inspector", `skip link should move focus to the inspector, got ${await focused()}`);
+    await evaluate(`document.querySelector("#show-jobs").focus(); return true`);
+    await press("Enter");
+    await waitFor(`document.querySelector("#dialog").open`);
+    assert(await evaluate(`return document.querySelector("#dialog").contains(document.activeElement)`), "focus did not move into the dialog");
+    await press("Escape");
+    await waitFor(`!document.querySelector("#dialog").open`);
+    assert((await focused()) === "show-jobs", `focus not returned to the opener, got ${await focused()}`);
+    await evaluate(`document.querySelector("#tab-answer").focus(); return true`);
+    await press("ArrowRight");
+    assert((await focused()) === "tab-evidence", `ArrowRight should move to the Evidence tab, got ${await focused()}`);
+    await press("End");
+    assert((await focused()) === "tab-history", "End should reach the History tab");
+    await evaluate(`document.querySelector("#band-strip").focus(); return true`);
+    await press("Home"); await press("ArrowRight"); await press("ArrowRight");
+    assert((await text("#wavelength-label")).includes("Plane 3/102"), `strip arrows: ${await text("#wavelength-label")}`);
+    await evaluate(`document.querySelector("#ribbon-track").focus(); return true`);
+    await press("Home"); await press("ArrowRight");
+    assert((await evaluate(`return document.querySelector("#ribbon-track").getAttribute("aria-valuenow")`)) === "2", "ribbon ArrowRight");
+    await press(" ");
+    assert((await evaluate(`return document.querySelector("#play").getAttribute("aria-label")`)).includes("Pause"), "Space should start playback");
+    await press(" ");
+    await evaluate(`const i = document.querySelector("#omni-input"); i.focus(); i.value = "draconis"; i.dispatchEvent(new Event("input")); return true`);
+    await press("ArrowDown"); await press("Enter");
+    await waitFor(`location.search.includes("target=NASA-05")`);
+    return "skip link → inspector; dialog focus in/out; tabs; strip; ribbon; search — all by key events";
+  });
+  await check("screen-reader semantics: Chrome accessibility tree exposes landmarks, roles, names and states", async () => {
+    await go("/?target=NASA-02");
+    await waitFor(`document.querySelector(".status-grid")`);
+    await send("Accessibility.enable");
+    const { nodes } = await send("Accessibility.getFullAXTree");
+    const role = (n) => n.role?.value, name = (n) => n.name?.value || "";
+    const has = (r, re) => nodes.some((n) => role(n) === r && (!re || re.test(name(n))));
+    const need = [["banner"], ["main"], ["search"], ["navigation", /Workbench panels/], ["tablist", /Investigation views/], ["tab", /Quick answer/], ["tab", /History/],
+      ["listbox", /wavelength planes/i], ["option", /Plane 51.*blank/i], ["slider", /Observation epoch/], ["application", /sky map/i], ["combobox", /Search targets/i], ["status"]];
+    const missing = need.filter(([r, re]) => !has(r, re)).map(([r, re]) => `${r}${re ? ` ${re}` : ""}`);
+    const tabs = nodes.filter((n) => role(n) === "tab");
+    const selected = tabs.filter((n) => n.properties?.some((p) => p.name === "selected" && p.value.value === true)).map(name);
+    const slider = nodes.find((n) => role(n) === "slider");
+    const unnamedButtons = nodes.filter((n) => role(n) === "button" && !n.ignored && !name(n).trim()).length;
+    assert(!missing.length, `missing in the accessibility tree: ${missing.join(", ")}`);
+    assert(selected.length === 1, `exactly one selected tab expected, got ${selected}`);
+    assert(!unnamedButtons, `${unnamedButtons} buttons without an accessible name`);
+    return `${nodes.length} AX nodes; landmarks and roles present; selected tab "${selected[0]}"; slider value "${slider?.value?.value ?? ""}"`;
+  });
+  await check("IAU constellation boundaries layer: real CDS VI/49 data with attribution, or an explained outage", async () => {
+    await go("/?layers=survey,planes,constellations");
+    await waitFor(`document.querySelector("#constellation-credit:not([hidden])") || document.querySelector("#map-banner").textContent.includes("Constellation boundaries unavailable")`, 30000);
+    if (await evaluate(`return !document.querySelector("#constellation-credit").hidden`)) {
+      const credit = await text("#constellation-credit");
+      assert(credit.includes("Davenhall & Leggett") && credit.includes("VI/49"), credit);
+      await click('[data-panel="layers"]');
+      const n = await evaluate(`return Number(document.querySelector('input[data-layer="constellations"]').closest("label").textContent.match(/\\((\\d+)\\)/)?.[1] || 0)`);
+      await evaluate(`document.querySelector(".map-panel").scrollIntoView(); return true`);
+      await shot("07-constellations");
+      return `boundaries drawn with attribution${n ? ` (${n} outlines)` : ""}`;
+    }
+    return `outage explained: ${await text("#map-banner")}`;
+  });
   await check("guided tour is skippable and opens real records", async () => {
     await click("#show-guide");
     await waitFor(`document.querySelector("[data-tour-go]")`);
@@ -434,8 +581,7 @@ try {
     return `frames ${stats.n}, p50 ${stats.p50.toFixed(1)} ms, p95 ${stats.p95.toFixed(1)} ms, max ${stats.max.toFixed(1)} ms`;
   });
 } catch (e) {
-  results.push({ name: "harness", ok: false, error: e.message });
-  console.log("FAIL harness:", e.message);
+  if (e.message !== "__job_flow_done__") { results.push({ name: "harness", ok: false, error: e.message }); console.log("FAIL harness:", e.message); }
 } finally {
   const failed = results.filter((r) => !r.ok);
   const errs = [...new Set(problems)];

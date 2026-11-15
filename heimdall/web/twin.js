@@ -52,7 +52,7 @@ export class TwinView {
       if (gen !== this.generation) return;
       this.data = data;
       this.error = null;
-      if (this.opts.mode === "difference" && !data.difference) this.opts.mode = "side";
+      if (this.opts.mode.startsWith("difference") && !data.difference) this.opts.mode = "side";
       this.announce?.(`Images aligned: ${data.comparability.status.replaceAll("_", " ").toLowerCase()}`);
     } catch (e) {
       if (gen !== this.generation || e.kind === "aborted") return;
@@ -80,10 +80,12 @@ export class TwinView {
     const act = b.dataset.twin;
     if (["side", "blink", "difference"].includes(act)) {
       if (act === "difference" && !this.data?.difference) return;
+      if (act === "difference" && !this.acknowledged) { this.opts.mode = "difference-ack"; this.stopBlink(); this.render(); return; }
       this.opts.mode = act;
       this.stopBlink();
       this.render();
-    } else if (act === "swap") { this.pair = { a: this.pair.b, b: this.pair.a }; this.onPair?.(this.pair); this.data = null; this.load(); }
+    } else if (act === "ack") { this.acknowledged = true; this.opts.mode = "difference"; this.render(); this.announce?.("Display subtraction shown; it is not evidence of change."); }
+    else if (act === "swap") { this.pair = { a: this.pair.b, b: this.pair.a }; this.onPair?.(this.pair); this.data = null; this.load(); }
     else if (act === "blink-toggle") { this.blinkTimer ? this.stopBlink() : this.startBlink(); this.renderBlinkButton(); }
     else if (act === "blink-step") { this.blinkFrame = 1 - (this.blinkFrame || 0); this.draw(); }
     else if (act === "zoom-in" || act === "zoom-out" || act === "reset") {
@@ -132,7 +134,7 @@ export class TwinView {
         <div class="segmented" role="group" aria-label="Comparison mode">
           <button type="button" data-twin="side" aria-pressed="${this.opts.mode === "side"}">Side by side</button>
           <button type="button" data-twin="blink" aria-pressed="${this.opts.mode === "blink"}">Blink</button>
-          <button type="button" data-twin="difference" aria-pressed="${this.opts.mode === "difference"}" ${diffOk ? "" : `disabled aria-describedby="twin-diff-why"`}>Difference</button>
+          <button type="button" data-twin="difference" aria-pressed="${this.opts.mode.startsWith("difference")}" ${diffOk ? "" : `disabled aria-describedby="twin-diff-why"`}>Difference (display only)</button>
         </div>
         <label>Stretch <select name="twin-stretch"><option value="own" ${this.opts.stretch === "own" ? "selected" : ""}>Per image</option><option value="common" ${this.opts.stretch === "common" ? "selected" : ""}>Common to both</option></select></label>
         <label class="inline"><input type="checkbox" name="twin-linked" ${this.opts.linked ? "checked" : ""}> Link cameras</label>
@@ -144,7 +146,10 @@ export class TwinView {
           ${cmp.reasons.map((r) => `<p class="compact">${h(r)}</p>`).join("")}
           ${!diffOk ? `<p class="compact" id="twin-diff-why">Difference disabled: ${h(cmp.reasons.join("; ") || "pair not comparable")}. Side-by-side and blink remain display comparisons only.</p>` : ""}
           ${cmp.limitations.length ? `<p class="compact">Limitations: ${h(cmp.limitations.join("; "))}</p>` : ""}</div>
-        <div class="twin-views" data-mode="${this.opts.mode}">${this.opts.mode === "side" ? [0, 1].map((i) => this.viewHtml(i)).join("") : this.viewHtml(0)}</div>
+        ${this.opts.mode.startsWith("difference") && d.difference ? `<div class="diff-disclosure" role="note" aria-labelledby="diff-disc-title"><strong id="diff-disc-title">Not PSF-matched · display only · not evidence of change</strong>
+          <p>${h(d.difference.disclosure || "Visual subtraction without PSF matching; not evidence of astrophysical change.")}</p>
+          ${this.opts.mode === "difference-ack" ? `<button type="button" class="quiet" data-twin="ack">I understand: show the display subtraction</button>` : ""}</div>` : ""}
+        ${this.opts.mode === "difference-ack" ? "" : `<div class="twin-views" data-mode="${this.opts.mode}">${this.opts.mode === "side" ? [0, 1].map((i) => this.viewHtml(i)).join("") : this.viewHtml(0)}</div>`}
         ${this.opts.mode === "blink" ? `<div class="twin-controls"><button type="button" class="quiet" data-twin="blink-toggle" aria-pressed="false">Start blink</button><button type="button" class="quiet" data-twin="blink-step">Show other image</button><output id="blink-label" aria-live="off"></output></div>` : ""}
         ${this.opts.mode === "difference" ? `<p class="compact">${h(d.difference.order)} in ${h(d.difference.units)}, clipped at ±${d.difference.clip_sigma}; grey = masked or no data (${number(100 * d.difference.masked_fraction, 1)}%). Preparation: ${h(d.difference.preparation.join("; "))}. ${h(d.difference.limitations.slice(-1)[0])}</p>` : ""}
         <table class="twin-meta"><thead><tr><th scope="col"></th><th scope="col">A</th><th scope="col">B</th></tr></thead><tbody>
@@ -160,7 +165,7 @@ export class TwinView {
   }
 
   viewHtml(i) {
-    const caption = this.opts.mode === "difference" ? "B − A (σ)" : this.opts.mode === "blink" ? "Blink" : i ? "B" : "A";
+    const caption = this.opts.mode === "difference" ? "B − A (σ) · display subtraction, not PSF-matched" : this.opts.mode === "blink" ? "Blink" : i ? "B" : "A";
     return `<figure class="twin-view"><div class="twin-frame"><canvas data-view="${i}" width="${this.data.grid.npix}" height="${this.data.grid.npix}" role="img" aria-label="${caption} image, north up, east left"></canvas><span class="twin-compass" aria-hidden="true">N↑ E←</span></div>
       <figcaption>${caption}<span class="twin-zoom"><button type="button" class="text-button" data-twin="zoom-in" data-view="${i}" aria-label="Zoom ${caption} in">＋</button><button type="button" class="text-button" data-twin="zoom-out" data-view="${i}" aria-label="Zoom ${caption} out">－</button><button type="button" class="text-button" data-twin="reset" data-view="${i}">Reset</button></span></figcaption></figure>`;
   }

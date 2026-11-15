@@ -39,6 +39,7 @@ export class JobTracker {
     for (const saved of this.load()) this.jobs.set(saved.id, { ...saved, summary: null, error: null, timer: null, inflight: false });
     doc?.addEventListener?.("visibilitychange", () => this.setPaused(Boolean(doc.hidden)));
     globalThis.addEventListener?.("online", () => this.resumeAll());
+    this.resumeAll(); // jobs restored after a reload reconnect immediately (polling only; nothing is resubmitted)
   }
 
   load() {

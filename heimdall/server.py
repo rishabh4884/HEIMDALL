@@ -189,6 +189,12 @@ class Api:
             if preview is None:
                 raise ApiError(404, "NOT_FOUND", "No displayable, checksum-matched science image is available in this local cache.")
             return 200, preview
+        if route == ("GET", "reference") and p == ["reference", "constellations"]:
+            from .constellations import BoundaryError, boundaries
+            try:
+                return 200, boundaries(Path(self.engine.settings.cache_dir), bool(self.engine.settings.offline))
+            except BoundaryError as e:
+                raise ApiError(503 if e.kind in ("OFFLINE", "UNREACHABLE") else 502, "UPSTREAM_UNAVAILABLE", str(e)) from None
         if route == ("GET", "resolve") and len(p) == 1:
             from .resolve_notes import ResolveError, resolve_name
             try:

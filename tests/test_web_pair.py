@@ -61,6 +61,9 @@ class PairTests(unittest.TestCase):
         self.assertEqual(d["order"], "B minus A")
         self.assertEqual(len(base64.b64decode(d["pixels"])), 48 * 48)
         self.assertIn("not a photometric measurement", d["limitations"][-1])
+        self.assertIs(d["psf_matched"], False)
+        self.assertEqual(d["interpretation"], "DISPLAY_ONLY_NOT_EVIDENCE")
+        self.assertIn("not evidence of astrophysical change", d["disclosure"])
 
     def test_aligned_grids_agree_on_star_positions_despite_rotation(self):
         """The two epochs are rotated by 25 degrees on the detector; after resampling, the brightest pixels coincide."""

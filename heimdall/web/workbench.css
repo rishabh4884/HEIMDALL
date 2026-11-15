@@ -371,6 +371,11 @@ label.inline input { width: auto; min-height: 0; }
 .twin-controls label.inline { flex: 0 0 auto; display: flex; }
 .twin-controls label:has(select[name=twin-stretch]) { flex: 0 1 180px; }
 .twin-status { margin-top: 10px; }
+details.limits { margin: 8px 0; font-size: .84rem; }
+details.limits .field-grid { grid-template-columns: repeat(2, 1fr); }
+.diff-disclosure { margin-top: 10px; border: 2px solid #b58a2c; background: #fff4d8; color: #533a08; border-radius: 8px; padding: 9px 11px; max-width: 760px; }
+.diff-disclosure p { margin-top: 4px; font-size: .84rem; }
+.diff-disclosure button { margin-top: 8px; }
 .twin-views { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin-top: 10px; max-width: 760px; }
 .twin-views[data-mode=blink], .twin-views[data-mode=difference] { grid-template-columns: minmax(220px, 380px); }
 .twin-view { margin: 0; }

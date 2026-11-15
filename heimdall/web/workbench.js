@@ -21,6 +21,7 @@ const state = {
 };
 const layerOptions = [
   ["survey", "SPHEREx DR1 image (display mosaic)", "coverage"], ["grid", "Coordinate grid", ""], ["planes", "Galactic equator & ecliptic (computed)", "planes"],
+  ["constellations", "IAU constellation boundaries (CDS VI/49)", ""],
   ["reference", "Catalogue or target position", "track"], ["coverage", "Observation footprints", "coverage"], ["detections", "Measured centroids / detections", "measure"],
   ["sources", "Associated sources", ""], ["candidates", "Candidates (review priority)", "candidate"], ["tracks", "Time-ordered linkages (not orbits)", "track"],
   ["associations", "Source membership", ""], ["catalogue", "Catalogue context", ""], ["inventory", "Indexed sky partitions (metadata only)", "coverage"],
@@ -87,6 +88,7 @@ async function applyUrl(parsed, { initial = false, fromHistory = false } = {}) {
   if (parsed.problems.length) notice(parsed.problems.join(" "), "error");
   if (parsed.plane) setPlane(parsed.plane, { silent: true });
   if (parsed.layers) state.layers = { ...state.layers, ...parsed.layers };
+  if (state.layers.constellations) loadConstellations();
   state.filters = { ...parsed.filters };
   state.separated = parsed.separated;
   state.twinPair = parsed.twin || null;
@@ -367,6 +369,7 @@ function canvasLayers() {
   return {
     synthetic: doc.data_origin === "SYNTHETIC",
     planes: referencePlanes,
+    constellations: list(state.constellations?.outlines).map((o) => ({ coords: [...o.ra.map((r, i) => [r, o.dec[i]]), [o.ra[0], o.dec[0]]], label: o.cst })),
     reference: ref,
     coverage: footprints.filter((o) => o.coords.length),
     detections: [
@@ -389,7 +392,7 @@ function drawMap() {
   $("focus-field").disabled = !fieldCenter();
   $("layers").innerHTML = layerOptions.map(([id, title, tone]) => {
     const total = Array.isArray(data[id]) ? data[id].length : 0;
-    const always = ["survey", "grid", "planes", "inventory"].includes(id);
+    const always = ["survey", "grid", "planes", "inventory", "constellations"].includes(id);
     return `<label class="layer" data-tone="${tone}"><i aria-hidden="true"></i><span>${title}${always ? "" : ` <small>(${total})</small>`}</span><input data-layer="${id}" type="checkbox" ${state.layers[id] ? "checked" : ""} ${!total && !always ? "disabled" : ""}></label>`;
   }).join("") + `<p class="compact">Positions: measured (gold), sources (blue), candidates (pink diamonds), linkages (teal). Lines are measured-position links, never orbits. No distance, morphology or Planet X location is drawn.</p>`;
   $("map-legend").innerHTML = layerOptions.filter(([id]) => state.layers[id] && !["survey", "grid"].includes(id) && (Array.isArray(data[id]) ? data[id].length : 0))
@@ -399,10 +402,24 @@ function drawMap() {
     : state.panelErrors.map ? `Map layer unavailable: ${state.panelErrors.map}`
     : state.coverage?.readiness === "PREPARING" ? "Metadata index for this region is being prepared (no analysis is running)."
     : state.record && !state.loading && !data.detections.length && !data.coverage.length && sky.view.span < 360 ? "No plotted observations in this selection."
+    : state.layers.constellations && state.constellationsError ? `Constellation boundaries unavailable: ${state.constellationsError}`
     : sky.view.span === 360 && state.layers.inventory ? (state.inventoryLoading ? "Loading recorded partition states…" : "Shaded partitions: searched in the metadata index. Indexed ≠ downloaded ≠ analysed; all-sky completeness is not established.") : "";
   $("map-banner").textContent = banner;
   $("map-banner").hidden = !banner;
   $("map-banner").dataset.tone = origin === "SYNTHETIC" || state.panelErrors.map ? "warning" : "";
+}
+
+// Official IAU boundaries (areas), fetched by the server from CDS VI/49 and cached; no stick figures are drawn.
+async function loadConstellations() {
+  if (state.constellations || state.constellationsLoading) return;
+  state.constellationsLoading = true;
+  try {
+    state.constellations = await client.get("/reference/constellations");
+    state.constellationsError = "";
+    $("constellation-credit").textContent = state.constellations.attribution;
+    $("constellation-credit").hidden = false;
+  } catch (e) { state.constellationsError = describe(e).message; }
+  finally { state.constellationsLoading = false; drawMap(); }
 }
 
 async function loadInventory() {
@@ -503,7 +520,10 @@ function renderStrip() {
         title="Measurement ${h(m.obs_id)} at ${m.wavelength.toFixed(4)} µm (${h(m.source)})" aria-label="Measurement ${h(m.obs_id)} at ${m.wavelength.toFixed(4)} micrometres"></button>`;
     }).join("");
     const r = DETECTOR_RANGE_UM[det];
-    return `<div class="lane" data-detector="${det}"><span class="lane-label">D${det} <small>${r[0]}–${r[1]} µm</small></span><div class="lane-cells">${cells}</div><div class="lane-marks">${ticks}</div></div>`;
+    // Field runs carry per-detector band metadata in their sky map (layers.bands): observation count and measured wavelength range.
+    const band = list(state.map?.layers?.bands).find((x) => Number(x.detector) === det);
+    const runNote = band ? ` · ${band.n_observations} obs${band.wavelength_range_um ? ` ${band.wavelength_range_um.map((x) => number(x, 3)).join("–")} µm` : ""}` : "";
+    return `<div class="lane" data-detector="${det}"><span class="lane-label">D${det} <small>${r[0]}–${r[1]} µm${h(runNote)}</small></span><div class="lane-cells">${cells}</div><div class="lane-marks">${ticks}</div></div>`;
   }).join("");
   strip.innerHTML = lanes;
   strip.dataset.separated = state.separated;
@@ -820,6 +840,16 @@ function regionDialog(category = "field") {
       ${opt("MOVING_OBJECT", "Run a motion test at this position", "target_investigation")}
       ${opt("VARIABLE_STAR", "Run a variability test at this position", "target_investigation")}
     </fieldset>
+    <details class="limits"><summary>Request limits (optional)</summary>
+      <div class="field-grid">
+        <label>Detectors <input name="detectors" placeholder="all, or e.g. 2,5" pattern="[1-6](,[1-6])*" aria-describedby="limits-error"></label>
+        <label>Max observations <input name="max_observations" type="number" min="1" max="64" step="1" placeholder="default" aria-describedby="limits-error"></label>
+        <label>MJD from <input name="mjd_start" type="number" step="any" aria-describedby="limits-error"></label>
+        <label>MJD to <input name="mjd_end" type="number" step="any" aria-describedby="limits-error"></label>
+      </div>
+      <p class="compact">Each observation is one cutout to verify or download (about 4 MB, the measured stored size); fewer observations and a narrower time window mean less transfer. Field runs allow up to 32 observations; coordinate tests up to 64.</p>
+      <p id="limits-error" class="field-error" role="alert"></p>
+    </details>
     <p class="compact">Runs are explicit and durable: an identical saved result returns at once (200); otherwise a job is queued (202) and may download cutouts. ${fieldCap?.limits ? `Field limits: ${h(JSON.stringify(fieldCap.limits))}.` : "Field radius ≤ 0.5°, up to 32 observations."} Coordinate tests use the engine's defaults (up to 64 observations).</p>
     ${workerWarn}
     <div class="form-actions"><button class="primary" type="submit">Continue</button></div></form>`, "region");
@@ -1104,6 +1134,7 @@ function bind() {
     state.layers[l] = e.target.checked;
     if (l === "survey") setPlane(state.plane);
     if (l === "inventory" && e.target.checked) loadInventory();
+    if (l === "constellations" && e.target.checked) loadConstellations();
     syncUrl(true);
     drawMap();
   });
@@ -1163,6 +1194,18 @@ function bind() {
     if (pos.error || $("radius-error").textContent) return; // values stay as entered
     const intent = fd.get("intent") || "coverage";
     const field = { ra: pos.ra, dec: pos.dec, radius };
+    const limits = {};
+    const det = String(fd.get("detectors") || "").replace(/\s+/g, "");
+    const maxObs = fd.get("max_observations"), t0 = fd.get("mjd_start"), t1 = fd.get("mjd_end");
+    let limitError = "";
+    if (det && !/^[1-6](,[1-6])*$/.test(det)) limitError = "Detectors must be numbers 1-6 separated by commas.";
+    else if (det) limits.detectors = [...new Set(det.split(",").map(Number))];
+    if (maxObs) { const n = Number(maxObs); if (!Number.isInteger(n) || n < 1 || n > (intent === "field" ? 32 : 64)) limitError = `Max observations must be 1-${intent === "field" ? 32 : 64}.`; else limits.max_observations = n; }
+    if (t0) limits.mjd_start = Number(t0);
+    if (t1) limits.mjd_end = Number(t1);
+    if (finite(limits.mjd_start) && finite(limits.mjd_end) && limits.mjd_start > limits.mjd_end) limitError = "MJD to must be at or after MJD from.";
+    $("limits-error").textContent = limitError;
+    if (limitError) { e.target.querySelector("details.limits").open = true; return; } // entered values are kept
     if (intent === "coverage") { $("dialog").close(); return openRecord("field", null, { field }); }
     if (intent === "select") {
       $("dialog").close();
@@ -1171,8 +1214,10 @@ function bind() {
       const items = ["detections", "sources", "candidates", "reference"].flatMap((k) => list(data[k]).filter((i) => finite(i.ra) && Math.hypot(deltaRA(i.ra, pos.ra) * cosd, i.dec - pos.dec) <= radius));
       return onRegion(items, null, `within ${radius}° of ${pos.ra.toFixed(4)}, ${pos.dec.toFixed(4)}`);
     }
-    if (intent === "field") return submit("/runs", field, `Field run at ${pos.ra.toFixed(4)}, ${pos.dec.toFixed(4)} r=${radius}`);
-    return submit("/investigations", { ra: pos.ra, dec: pos.dec, category: intent }, `${label(intent)} test at ${pos.ra.toFixed(4)}, ${pos.dec.toFixed(4)}`);
+    const desc = Object.entries(limits).map(([k, v]) => `${k}=${v}`).join(" ");
+    if (intent === "field") return submit("/runs", { ...field, ...limits }, `Field run at ${pos.ra.toFixed(4)}, ${pos.dec.toFixed(4)} r=${radius}${desc ? ` (${desc})` : ""}`);
+    return submit("/investigations", { ra: pos.ra, dec: pos.dec, category: intent, ...(Object.keys(limits).length ? { options: limits } : {}) },
+      `${label(intent)} test at ${pos.ra.toFixed(4)}, ${pos.dec.toFixed(4)}${desc ? ` (${desc})` : ""}`);
   });
   // Forms rendered inside the inspector (review notes) submit here; the dialog has its own handler.
   $("record").addEventListener("submit", (e) => {

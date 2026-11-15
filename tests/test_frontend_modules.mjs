@@ -118,8 +118,11 @@ test("job tracker: polls at the documented cadence, never resubmits, stops on te
   assert.deepEqual(s.result, { kind: "version", id: "tinv:NASA-02:0c714738" });
   assert.equal(timers.pending(), 0, "terminal jobs are not polled");
   assert.ok(seen.every(([p, o]) => p.startsWith("/jobs/") && o.fresh));
+  replies.push({ readiness: "PREPARING", job: { state: "QUEUED" }, must_resubmit: false });
   const reloaded = new JobTracker({ client, storage, timers, doc, now: timers.now });
   assert.ok(reloaded.jobs.has("job:target_investigation:c03487f9482a"), "tracked ids survive a reload");
+  await timers.advance(0);
+  assert.equal(reloaded.jobs.get("job:target_investigation:c03487f9482a").summary.state, "QUEUED", "a restored job is polled at once, not left unchecked");
 });
 
 test("job summary: outage with active auto-recovery is dormant, not final; must_resubmit is literal", () => {

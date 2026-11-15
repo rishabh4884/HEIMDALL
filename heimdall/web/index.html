@@ -83,7 +83,7 @@
           <p id="separate-note" class="band-note"></p>
         </div>
         <div class="map-stage" id="map-stage">
-          <canvas id="sky" tabindex="0" aria-label="Interactive ICRS sky map. Arrow keys pan, plus and minus zoom. Every plotted record is also listed in the panels below." aria-describedby="map-description"></canvas>
+          <canvas id="sky" tabindex="0" role="application" aria-roledescription="interactive sky map" aria-label="Interactive ICRS sky map. Arrow keys pan, plus and minus zoom. Every plotted record is also listed in the panels below." aria-describedby="map-description"></canvas>
           <div id="map-banner" class="map-banner" hidden></div>
           <div id="map-compass" class="compass" aria-hidden="true"><svg viewBox="-30 -30 60 60"><circle r="2.5" class="hub"/><line id="compass-n" x1="0" y1="0" x2="0" y2="-20"/><line id="compass-e" x1="0" y1="0" x2="-20" y2="0"/><text id="compass-nl" x="0" y="-23">N</text><text id="compass-el" x="-25" y="4">E</text></svg></div>
           <div id="scale-bar" class="scale-bar" aria-hidden="true"><i></i><span></span></div>
@@ -106,6 +106,7 @@
           </div>
           <div id="ribbon-track" class="ribbon-track" role="slider" tabindex="0" aria-label="Observation epoch" aria-valuemin="1"></div>
         </div>
+        <p id="constellation-credit" class="image-credit" hidden></p>
         <div class="image-credit"><span id="image-status" role="status">Loading SPHEREx DR1 imagery…</span><a href="https://doi.org/10.26131/IRSA679" target="_blank" rel="noopener noreferrer">NASA / IPAC IRSA · DR1</a></div>
       </section>
       <nav class="map-tools" aria-label="Workbench panels">
