@@ -254,3 +254,20 @@ class ReportApiTests(ScientistApiTests):
         self.assertIn("## Claims", md)
         self.assertIn("## Limitations", md)
         self.assertEqual(self.err("GET", "/api/v1/targets/NASA-01/report", {"format": ["pdf"]}).status, 400)
+
+
+class RunComparisonTests(unittest.TestCase):
+    def test_run_comparison_reports_parameters_inputs_and_categories_and_refuses_disjoint_fields(self):
+        from heimdall.scientist import compare_runs
+        a = {"run_id": "R1", "data_origin": "REAL", "request": {"ra_deg": 150.1, "dec_deg": 2.2, "radius_deg": 0.05, "max_observations": 4},
+             "observations": [{"obs_id": "X", "included": True}, {"obs_id": "Y", "included": True}], "detections": [1, 2], "sources": [1],
+             "candidates": [{"category": "MOTION_CANDIDATE"}], "investigations": {"interpretation_counts": {"INCONCLUSIVE": 1}}, "results_hash": "h1"}
+        b = dict(a, run_id="R2", request=dict(a["request"], max_observations=6), observations=[{"obs_id": "X", "included": True}, {"obs_id": "Z", "included": True}],
+                 detections=[1, 2, 3], candidates=[], investigations={"interpretation_counts": {}}, results_hash="h2")
+        c = compare_runs(a, b)
+        self.assertEqual(c["comparability"]["status"], "COMPARABLE_WITH_LIMITATIONS")
+        self.assertEqual(c["parameters"], {"max_observations": {"a": 4, "b": 6}})
+        self.assertEqual((c["inputs"]["only_a"], c["inputs"]["only_b"]), (["Y"], ["Z"]))
+        self.assertEqual(c["changes"]["candidate_categories"], {"a": {"MOTION_CANDIDATE": 1}, "b": {}})
+        far = dict(b, request=dict(b["request"], ra_deg=200.0))
+        self.assertEqual((compare_runs(a, far)["comparability"]["status"], compare_runs(a, far)["changes"]), ("NOT_COMPARABLE", None))

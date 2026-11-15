@@ -27,10 +27,21 @@ def capabilities(engine) -> dict:
     from .targets.variability import METHOD_VERSION as VAR_VERSION
     cfg = ServiceConfig.from_env()
     unval = "UNVALIDATED_ON_REAL_DATA (software-verified on synthetic controls; see docs/VALIDATION.md)"
+    svc = engine.data_service()
+    per_det = {str(d): {"real_products_stored": 0, "indexed_observations": 0, "scientific_validation": "NOT_VALIDATED"} for d in range(1, 7)}
+    for r in svc.db.query("SELECT o.detector d, COUNT(DISTINCT k.sha256) n FROM product_keys k JOIN observations o ON o.obs_id=k.obs_id AND o.release=k.release "
+                          "WHERE o.synthetic=0 GROUP BY o.detector"):
+        if str(r["d"]) in per_det:
+            per_det[str(r["d"])]["real_products_stored"] = r["n"]
+    for r in svc.db.query("SELECT detector d, COUNT(*) n FROM observations WHERE synthetic=0 AND superseded_by IS NULL GROUP BY detector"):
+        if str(r["d"]) in per_det:
+            per_det[str(r["d"])]["indexed_observations"] = r["n"]
     return {
         "schema": CAPABILITIES_SCHEMA, "software_version": __version__, "offline": bool(engine.settings.offline),
         "data": {"collections": list(CURRENT_COLLECTIONS), "never_mixed": "QR2 (downloadable, not searchable) is never mixed into current results",
-                 "detectors": [1, 2, 3, 4, 5, 6], "per_detector_validation": "NOT_VALIDATED for any detector (docs/SPHEREX_FIDELITY.md)",
+                 "detectors": [1, 2, 3, 4, 5, 6], "per_detector": per_det,
+                 "per_detector_note": "implementation support (indexed / stored genuine products) is separate from scientific validation, which no detector has "
+                                      "(docs/SPHEREX_FIDELITY.md)",
                  "all_sky_index": "partitioned inventory available (GET /inventory/partitions); completeness is reported per partition, never assumed"},
         "analyses": [
             {"id": "coverage", "entry": "GET /api/v1/coverage", "prerequisites": ["indexed region (else a durable INDEX job)"],
@@ -164,11 +175,12 @@ def compare_runs(a: dict, b: dict) -> dict:
 
     def counts(r):
         cands = r.get("candidates") or []
-        att: dict[str, int] = {}
+        cat: dict[str, int] = {}
         for c in cands:
-            att[str(c.get("attention_level"))] = att.get(str(c.get("attention_level")), 0) + 1
+            cat[str(c.get("category"))] = cat.get(str(c.get("category")), 0) + 1
         return {"detections": len(r.get("detections") or []), "sources": len(r.get("sources") or []), "candidates": len(cands),
-                "tracks": len(r.get("tracks") or []), "attention": att}
+                "tracks": len(r.get("tracks") or []), "candidate_categories": cat,
+                "interpretations": (r.get("investigations") or {}).get("interpretation_counts") if isinstance(r.get("investigations"), dict) else None}
     ca, cb = counts(a), counts(b)
     out["changes"] = {k: {"a": ca[k], "b": cb[k]} for k in ca if ca[k] != cb[k]}
     return out

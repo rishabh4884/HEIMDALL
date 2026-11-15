@@ -334,6 +334,32 @@ instead of being analysed. Full suite: 535 OK (5 live skipped).
   `python3 -m heimdall validate <run>` on the cached QR2 field with seed 20261029, attribute the losses, then change the responsible
   stage with positive and negative regression cases.
 
+### R2-M6 — live verification under the IRSA/Gaia outage and the fixes it exposed (this commit)
+
+- **Alternate analysis with a material input change (real).** `POST /runs` for the 150.1/2.2 field with `max_observations` 6:
+  - acknowledged in 1.3 ms (202);
+  - worker 10 acquired 4 new genuine DR1 products through the product route while discovery was down, and completed in 60 s:
+    run `R20261115T103457-def358a0`, manifest `man:3845400908334a59`;
+  - `GET /compare` against the 4-observation run: `COMPARABLE_WITH_LIMITATIONS` (2 shared observations, 6 different, parameter
+    `max_observations` 4 → 6);
+  - detections 103 → 162, sources 33 → 35;
+  - motion candidates 3 → 1, interpretations {EXPLAINED 1, INCONCLUSIVE 2} → {EXPLAINED 1}.
+
+  The two inconclusive motion candidates of the 4-observation run did not recur with more data. That is recorded as non-recurrence,
+  not as proof they were spurious. Evidence: `alternate_run.txt`.
+- **Fix: run comparison read a non-existent field.** It used `attention_level`; it now reports candidate categories and the
+  investigation interpretation counts. Test: `RunComparisonTests`.
+- **Catalogue-outage policy, live.** Job `job:target_investigation:c03487f9482a`, past its grace, took the narrowed path at 10:42:00Z.
+  It stopped waiting on the catalogue, used a coordinate-only reference, and moved to its INDEX child `job:index:77e5ad7b5665`, which
+  waits on IRSA discovery (still 502).
+- **Fix: polling held the worker.** Each parent poll re-tried Gaia (about 60 s of timeouts). There is now a per-job negative cache: after
+  a degraded attempt finds the catalogue down, catalogue calls are skipped for `CATALOGUE_SKIP_S` (900 s). Verified live after the
+  restart: the 10:46:46Z poll took under a second. Test: `CatalogueSkipTests`.
+- **Capabilities.** Per-detector implementation evidence (indexed observations and stored genuine products per detector), kept separate
+  from scientific validation (NOT_VALIDATED for all six).
+- Tests: full suite 565 OK (5 live skipped).
+- Worker 11 (pid 8756) runs this code.
+
 ## Integration record (D-007; approved by the owner on 2026-11-15)
 
 The full individual commit history is kept; nothing is squashed. Steps and verification:

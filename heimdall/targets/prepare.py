@@ -75,16 +75,25 @@ def _stored_result(service: DataService, key: str) -> dict | None:
 CATALOGUE_GRACE_ATTEMPTS = 3  # catalogue failures tolerated before a coordinate request proceeds with explicitly narrowed context
 
 
+CATALOGUE_SKIP_S = 900.0  # after a degraded attempt found the catalogue down, the worker skips catalogue calls for this job this long
+
+
 def advance(service: DataService, spec: TargetSpec, opts: TargetOptions, *, settings, config, registry, store, online: bool, progress=None,
-            analyse: bool = True, allow_degraded: bool = False) -> dict:
+            analyse: bool = True, allow_degraded: bool = False, skip_catalogue: bool = False, degraded_out: list | None = None) -> dict:
     """One non-blocking step. Returns {"state": "DONE", "result": ...} or {"state": "WAIT"|<terminal readiness>, ...}. Online = a worker may use the network.
     ``analyse=False``: if every input is local but no stored identical result exists, return WAIT(analysis) instead of computing inline."""
     cfg_settings = settings if online else _offline(settings)
     cat_settings = _single_attempt(cfg_settings) if online else cfg_settings
     gaia = CachedService("gaia", cat_settings)
     catwise = CachedService("catwise", cat_settings)
-    ref = astrometry.resolve(spec, catwise if spec.catalogue == "catwise2020" else gaia, gaia_service=gaia)
-    degraded: list[str] = []
+    degraded: list[str] = degraded_out if degraded_out is not None else []
+    if skip_catalogue and spec.target_id.startswith("COORD-"):
+        # recently confirmed unavailable for this job: do not hold the worker on catalogue timeouts at every poll of a child job
+        ref = astrometry.ReferenceAstrometry(target_id=spec.target_id, catalogue="gaia_dr3", status="SERVICE_FAILED",
+                                             reason="catalogue recently unavailable for this request (skipped; re-checked after the skip window)",
+                                             ra_deg=None, dec_deg=None)
+    else:
+        ref = astrometry.resolve(spec, catwise if spec.catalogue == "catwise2020" else gaia, gaia_service=gaia)
     if not ref.resolved:
         coord = spec.target_id.startswith("COORD-")
         if coord and allow_degraded and ref.status != "UNRESOLVED" and not settings.offline:
@@ -145,13 +154,13 @@ def advance(service: DataService, spec: TargetSpec, opts: TargetOptions, *, sett
                 return {"state": st["readiness"], "child": st["job"]["job_id"] if st["job"] else None, "detail": st["message"]}
             manifest = service.manifest(st["manifest_id"])
             # field-star catalogue for registration controls: must be cached (a worker warms it) or the analysis would silently lose its controls
-            gq = astrometry.gaia_cone_with_fallback(gaia, cen.ra_deg, cen.dec_deg, size * 0.75, 17.0)
-            if gq.status != "COMPLETED" and not _synthetic(by_id):
+            gq = None if (skip_catalogue and allow_degraded) else astrometry.gaia_cone_with_fallback(gaia, cen.ra_deg, cen.dec_deg, size * 0.75, 17.0)
+            if (gq is None or gq.status != "COMPLETED") and not _synthetic(by_id):
                 if not allow_degraded:
-                    return {"state": "WAIT", "waiting_on": "field_catalogue", "child": None, "detail": f"field catalogue not yet available ({gq.reason})"}
+                    return {"state": "WAIT", "waiting_on": "field_catalogue", "child": None, "detail": f"field catalogue not yet available ({gq.reason if gq else 'skipped'})"}
                 # optional context past its grace: measure without registration controls; the analysis records the missing field catalogue
                 # and the claims gate narrows every conclusion that needs controls
-                degraded.append(f"field-star catalogue unavailable ({gq.reason}); no registration controls or control-star false-alarm reference")
+                degraded.append(f"field-star catalogue unavailable ({gq.reason if gq else 'recently unavailable; skipped'}); no registration controls or control-star false-alarm reference")
     key = request_key(spec, opts, config.hash, (manifest["manifest_id"] if manifest else f"idx:{idx.get('as_of')}") + f"|fp:{footprint_index}"
                       + (("|degraded:" + digest(degraded, 8)) if degraded else ""))  # a degraded result is never reused once context is back
     prior = _stored_result(service, key)
@@ -223,15 +232,22 @@ def investigation_status(service: DataService, job_id: str, spec: TargetSpec | N
 
 def make_handler(*, settings, config, registry, store):
     """Worker handler for TARGET_INVESTIGATION jobs: advance online; wait on child jobs; finish with a saved result or a terminal state."""
+    negative: dict[str, float] = {}  # job_id -> monotonic time until which catalogue calls are skipped (per worker process)
+
     def handler(service: DataService, job: dict) -> dict:
         jid = job["job_id"]
         spec = _spec_from(job["payload"]["spec"])
         opts = TargetOptions(**{k: (tuple(v) if isinstance(v, list) else v) for k, v in job["payload"]["options"].items()})
         service.jobs.transition(jid, JobState.DISCOVERING, reason="preparing data for the investigation", lease=True)
+        import time as _time
         n_cat = sum(1 for e in service.jobs.events(jid) if (e["reason"] or "").startswith(("reference astrometry not yet available", "field catalogue not yet available")))
+        degraded_now: list[str] = []
         try:
             step = advance(service, spec, opts, settings=settings, config=config, registry=registry, store=store, online=True,
-                           allow_degraded=n_cat >= CATALOGUE_GRACE_ATTEMPTS)
+                           allow_degraded=n_cat >= CATALOGUE_GRACE_ATTEMPTS, skip_catalogue=negative.get(jid, 0.0) > _time.monotonic(),
+                           degraded_out=degraded_now)
+            if degraded_now and negative.get(jid, 0.0) <= _time.monotonic():
+                negative[jid] = _time.monotonic() + CATALOGUE_SKIP_S
         except Exception as exc:  # noqa: BLE001 - recorded: request errors fail; unexpected errors retry a bounded number of times, then FAILED
             return service.jobs.fail_or_retry(service.jobs.get(jid), exc)
         state = step["state"]

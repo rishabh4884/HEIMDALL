@@ -320,3 +320,14 @@ class CatalogueOutagePolicyTests(unittest.TestCase):
         self.assertEqual(after["waiting_on"], "index")  # past the grace: continues to data preparation with a coordinate-only reference
         named = self._advance(get_target("NASA-04"), True)
         self.assertEqual(named["waiting_on"], "catalogue")  # a named target's identity is essential: it keeps waiting
+
+
+class CatalogueSkipTests(CatalogueOutagePolicyTests):
+    def test_a_recently_unavailable_catalogue_is_not_called_again_during_child_polling(self):
+        from unittest import mock
+        from heimdall.targets.registry import TargetSpec
+        coord = TargetSpec.from_coordinates(150.1, 2.2, category="VARIABLE_STAR")
+        with mock.patch.object(prepare.astrometry, "resolve", side_effect=AssertionError("network: catalogue called")):
+            step = prepare.advance(self.svc, coord, TargetOptions(context=False), settings=self.settings, config=EngineConfig(), registry=None, store=None,
+                                   online=True, allow_degraded=True, skip_catalogue=True)
+        self.assertEqual(step["waiting_on"], "index")
